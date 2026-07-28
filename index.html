@@ -143,6 +143,11 @@ const fmtINR = n => '\u20B9' + Number(n||0).toLocaleString('en-IN', {maximumFrac
 const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const LOCAL_RATE = 24000;
 
+// Collections is the single source of truth for money received. A sale's "paid" total
+// is always computed from linked Collection entries, never stored on the sale itself.
+const paidOf = (sale) => state.collections.filter(c=>c.linkedSaleId===sale.id).reduce((s,c)=>s+(Number(c.amount)||0),0);
+const dueOf = (sale) => (Number(sale.saleValue)||0) - paidOf(sale);
+
 function flash(msg){
   const t = document.getElementById('toast');
   t.textContent = msg; t.style.display='block';
@@ -232,7 +237,7 @@ function renderSalesTab(){
   const monthSales = state.sales.filter(s=>s.month===state.month);
   const totalVol = monthSales.reduce((a,s)=>a+(Number(s.volumeCBM)||0),0);
   const totalValue = monthSales.reduce((a,s)=>a+(Number(s.saleValue)||0),0);
-  const totalPaid = monthSales.reduce((a,s)=>a+(Number(s.paymentReceived)||0),0);
+  const totalPaid = monthSales.reduce((a,s)=>a+paidOf(s),0);
   const totalDue = totalValue - totalPaid;
 
   let html = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
@@ -248,6 +253,7 @@ function renderSalesTab(){
       <div class="stat stone"><div class="lbl">Sales this month</div><div class="val">${monthSales.length}</div></div>
       <div class="stat teal"><div class="lbl">Volume</div><div class="val">${totalVol.toLocaleString('en-IN')} CBM</div></div>
       <div class="stat amber"><div class="lbl">Sale Value</div><div class="val">${fmtINR(totalValue)}</div></div>
+      <div class="stat emerald"><div class="lbl">Collected</div><div class="val">${fmtINR(totalPaid)}</div></div>
       <div class="stat red"><div class="lbl">Due</div><div class="val">${fmtINR(totalDue)}</div></div>
     </div>`;
 
@@ -262,7 +268,8 @@ function renderSalesTab(){
     html += `<tr><td colspan="11" class="empty">No sales logged this month yet.</td></tr>`;
   } else {
     monthSales.slice().reverse().forEach(s=>{
-      const due = (Number(s.saleValue)||0) - (Number(s.paymentReceived)||0);
+      const paid = paidOf(s);
+      const due = dueOf(s);
       html += `<tr>
         <td>${esc(s.date)}</td>
         <td><span class="badge ${s.salesType==='Export'?'teal':'stone'}">${esc(s.salesType)}</span></td>
@@ -272,7 +279,7 @@ function renderSalesTab(){
         <td class="num">${s.volumeCBM}</td>
         <td class="num">₹${Number(s.rate).toLocaleString('en-IN')}</td>
         <td class="num">${fmtINR(s.saleValue)}</td>
-        <td class="num" style="color:var(--emerald);">${fmtINR(s.paymentReceived)}</td>
+        <td class="num" style="color:var(--emerald);">${fmtINR(paid)}</td>
         <td class="num" style="color:${due>0?'var(--red)':'var(--emerald)'};">${fmtINR(due)}</td>
         <td><div class="actions">
           <button class="icon-btn" onclick="editSale('${s.id}')" title="Edit">✏️</button>
@@ -341,19 +348,44 @@ function updateSaleCalcs(){
 
 function setSaleType(t){ saleForm.salesType = t; saleForm.rate = t==='Local' ? LOCAL_RATE : ''; renderSalesTab(); }
 function setSaleItem(t){ saleForm.itemType = t; renderSalesTab(); }
+function linkedNoteFor(sale){ return `${sale.itemType}${sale.massId ? ' '+sale.massId : ''}`; }
+
 async function submitSale(){
   const f = saleForm;
   if (!f.date || !f.salesType || !f.customer || !f.volumeCBM || !f.rate){ alert('Please fill date, type, customer, volume and rate.'); return; }
   if (f.itemType !== 'Loose Blocks' && !f.massId){ alert('Please enter the Mass ID.'); return; }
   const saleValue = (Number(f.volumeCBM)||0) * (Number(f.rate)||0);
-  const rec = { ...f, saleValue, volumeCBM:Number(f.volumeCBM), rate:Number(f.rate), paymentReceived:Number(f.paymentReceived)||0, month: monthOf(f.date) };
+  const newPaid = Number(f.paymentReceived)||0;
+  const { paymentReceived, ...rest } = f;
+  const rec = { ...rest, saleValue, volumeCBM:Number(f.volumeCBM), rate:Number(f.rate), month: monthOf(f.date) };
+
+  let saleId = f.id;
   if (f.id){
+    const existing = state.sales.find(s=>s.id===f.id);
     state.sales = state.sales.map(s => s.id===f.id ? { ...s, ...rec, editedBy: state.role } : s);
+    await saveKey(KEYS.SALES, state.sales);
+    // Reconcile payment only if the entered total actually changed — replace this sale's
+    // linked collections with one corrected entry, leaving unrelated collections untouched.
+    const currentPaid = paidOf(existing);
+    if (newPaid !== currentPaid){
+      const withoutThisSale = state.collections.filter(c=>c.linkedSaleId!==f.id);
+      const nextColl = newPaid > 0
+        ? [{ id: uid(), date: today(), customer: rec.customer, amount: newPaid, mode:'—', note:'', month: monthOf(today()), linkedSaleId: f.id, linkedNote: linkedNoteFor(rec) }, ...withoutThisSale]
+        : withoutThisSale;
+      state.collections = nextColl;
+      await saveKey(KEYS.COLLECTION, state.collections);
+    }
   } else {
-    rec.id = uid(); rec.createdBy = state.role;
+    saleId = uid();
+    rec.id = saleId; rec.createdBy = state.role;
     state.sales = [...state.sales, rec];
+    await saveKey(KEYS.SALES, state.sales);
+    if (newPaid > 0){
+      const collRec = { id: uid(), date: rec.date, customer: rec.customer, amount: newPaid, mode:'—', note:'', month: monthOf(rec.date), linkedSaleId: saleId, linkedNote: linkedNoteFor(rec) };
+      state.collections = [collRec, ...state.collections];
+      await saveKey(KEYS.COLLECTION, state.collections);
+    }
   }
-  await saveKey(KEYS.SALES, state.sales);
   await addCustomer(f.customer);
   if (f.massId) await addMassId(f.massId);
   saleForm = blankSale();
@@ -363,16 +395,18 @@ async function submitSale(){
 function editSale(id){
   const s = state.sales.find(x=>x.id===id);
   if (!s) return;
-  saleForm = { ...s };
+  saleForm = { ...s, paymentReceived: paidOf(s) };
   renderSalesTab();
   window.scrollTo({top:0, behavior:'smooth'});
 }
 function cancelSaleEdit(){ saleForm = blankSale(); renderSalesTab(); }
 async function deleteSale(id){
   if (state.role !== 'Admin') return;
-  if (!confirm('Delete this sale? This cannot be undone.')) return;
+  if (!confirm('Delete this sale? This also removes any collections linked to it. This cannot be undone.')) return;
   state.sales = state.sales.filter(s=>s.id!==id);
   await saveKey(KEYS.SALES, state.sales);
+  state.collections = state.collections.filter(c=>c.linkedSaleId!==id);
+  await saveKey(KEYS.COLLECTION, state.collections);
   flash('Sale deleted');
   renderSalesTab();
 }
@@ -385,26 +419,32 @@ const MODES = ['Cash','Bank Transfer','Cheque','UPI'];
 function renderCollectionTab(){
   const monthColl = state.collections.filter(c=>c.month===state.month);
   const total = monthColl.reduce((a,c)=>a+(Number(c.amount)||0),0);
+  const viaSales = monthColl.filter(c=>c.linkedSaleId).reduce((a,c)=>a+(Number(c.amount)||0),0);
+  const direct = total - viaSales;
 
   let html = `
     <div class="stat-row">
       <div class="stat emerald"><div class="lbl">Total Collected</div><div class="val">${fmtINR(total)}</div></div>
+      <div class="stat amber"><div class="lbl">Via Sales</div><div class="val">${fmtINR(viaSales)}</div></div>
+      <div class="stat stone"><div class="lbl">Direct</div><div class="val">${fmtINR(direct)}</div></div>
       <div class="stat stone"><div class="lbl">Entries</div><div class="val">${monthColl.length}</div></div>
     </div>`;
 
   html += renderCollForm();
 
   html += `<div class="table-wrap"><table><thead><tr>
-    <th>Date</th><th>Customer</th><th>Mode</th><th style="text-align:right;">Amount</th><th>Note</th><th></th>
+    <th>Date</th><th>Customer</th><th>Mode</th><th>Source</th><th style="text-align:right;">Amount</th><th>Note</th><th></th>
     </tr></thead><tbody>`;
   if (monthColl.length===0){
-    html += `<tr><td colspan="6" class="empty">No collections logged this month yet.</td></tr>`;
+    html += `<tr><td colspan="7" class="empty">No collections logged this month yet.</td></tr>`;
   } else {
     monthColl.slice().reverse().forEach(c=>{
+      const linked = !!c.linkedSaleId;
       html += `<tr>
         <td>${esc(c.date)}</td>
         <td>${esc(c.customer)}</td>
         <td>${esc(c.mode)}</td>
+        <td>${linked ? `<span class="badge amber">Sale — ${esc(c.linkedNote||'linked')}</span>` : `<span class="badge stone">Direct</span>`}</td>
         <td class="num" style="color:var(--emerald);">${fmtINR(c.amount)}</td>
         <td style="color:#78716c;font-size:12px;">${esc(c.note||'—')}</td>
         <td><div class="actions">
@@ -415,7 +455,7 @@ function renderCollectionTab(){
     });
   }
   html += `</tbody></table></div>
-  <p class="hint">For advance payments received before a sale exists, just note that in the Note field (e.g. "advance — sale pending") and reconcile manually once the sale is logged.</p>`;
+  <p class="hint">"Sale — ..." entries are linked to a specific sale — editing the amount here updates that sale's Paid/Due automatically, and vice versa. "Direct" entries are advances not yet tied to a sale.</p>`;
   document.getElementById('app').innerHTML = html;
   refreshDatalists();
 }
@@ -483,12 +523,20 @@ function renderFullCaptureBlock(){
   const targetRev = Number(existing?.targetRevenue)||0;
   const achievedVol = monthSales.reduce((a,s)=>a+(Number(s.volumeCBM)||0),0);
   const achievedRev = monthSales.reduce((a,s)=>a+(Number(s.saleValue)||0),0);
-  const totalPaid = monthSales.reduce((a,s)=>a+(Number(s.paymentReceived)||0),0);
+  const totalPaid = monthSales.reduce((a,s)=>a+paidOf(s),0);
   const totalDue = achievedRev - totalPaid;
   const totalColl = monthColl.reduce((a,c)=>a+(Number(c.amount)||0),0);
 
   let inner = `<h2 style="margin:0 0 4px;font-size:18px;">VKG Sales &amp; Collections Summary</h2>`;
   inner += `<p style="margin:0 0 16px;font-size:12px;color:#78716c;">${esc(state.month)} — generated ${esc(todayStr)}</p>`;
+
+  inner += `<h3 style="font-size:13px;text-transform:uppercase;color:#57534e;margin:0 0 10px;">Headline Numbers</h3>`;
+  inner += `<table class="slice-table" style="width:100%;margin-bottom:20px;"><tbody>
+    <tr><td style="font-weight:600;">Sale Value (Achieved Revenue)</td><td style="text-align:right;">${fmtINR(achievedRev)}</td></tr>
+    <tr><td style="font-weight:600;">Collected</td><td style="text-align:right;color:#047857;">${fmtINR(totalPaid)}</td></tr>
+    <tr><td style="font-weight:600;">Due</td><td style="text-align:right;color:${totalDue>0?'#dc2626':'#047857'};">${fmtINR(totalDue)}</td></tr>
+    <tr><td style="font-weight:600;">Total Collections logged this month (incl. direct/advance)</td><td style="text-align:right;">${fmtINR(totalColl)}</td></tr>
+  </tbody></table>`;
 
   inner += `<h3 style="font-size:13px;text-transform:uppercase;color:#57534e;margin:0 0 10px;">Target vs Achievement</h3>`;
   inner += `<table class="slice-table" style="width:100%;margin-bottom:20px;"><thead><tr><th>Metric</th><th style="text-align:right;">Target</th><th style="text-align:right;">Achieved</th><th style="text-align:right;">Balance</th></tr></thead><tbody>
@@ -499,19 +547,19 @@ function renderFullCaptureBlock(){
   inner += `<h3 style="font-size:13px;text-transform:uppercase;color:#57534e;margin:0 0 10px;">Today's Sales — ${esc(todayStr)}</h3>`;
   inner += `<table class="slice-table" style="width:100%;margin-bottom:20px;"><thead><tr><th>Customer</th><th>Item</th><th style="text-align:right;">Vol</th><th style="text-align:right;">Value</th><th style="text-align:right;">Paid</th></tr></thead><tbody>`;
   if (todaySales.length===0){ inner += `<tr><td colspan="5" style="text-align:center;color:#a8a29e;padding:10px;">No sales logged today yet.</td></tr>`; }
-  else { todaySales.forEach(s=>{ inner += `<tr><td>${esc(s.customer)}</td><td>${esc(s.itemType)}</td><td style="text-align:right;">${s.volumeCBM}</td><td style="text-align:right;">${fmtINR(s.saleValue)}</td><td style="text-align:right;">${fmtINR(s.paymentReceived)}</td></tr>`; }); }
+  else { todaySales.forEach(s=>{ inner += `<tr><td>${esc(s.customer)}</td><td>${esc(s.itemType)}</td><td style="text-align:right;">${s.volumeCBM}</td><td style="text-align:right;">${fmtINR(s.saleValue)}</td><td style="text-align:right;">${fmtINR(paidOf(s))}</td></tr>`; }); }
   inner += `</tbody></table>`;
 
   inner += `<h3 style="font-size:13px;text-transform:uppercase;color:#57534e;margin:0 0 10px;">Confirmed Sales — Full Month (${monthSales.length})</h3>`;
-  inner += `<table class="slice-table" style="width:100%;margin-bottom:20px;"><thead><tr><th>Date</th><th>Customer</th><th>Item</th><th style="text-align:right;">Vol</th><th style="text-align:right;">Value</th><th style="text-align:right;">Due</th></tr></thead><tbody>`;
-  if (monthSales.length===0){ inner += `<tr><td colspan="6" style="text-align:center;color:#a8a29e;padding:10px;">No sales this month.</td></tr>`; }
-  else { monthSales.forEach(s=>{ const due=(Number(s.saleValue)||0)-(Number(s.paymentReceived)||0); inner += `<tr><td>${esc(s.date)}</td><td>${esc(s.customer)}</td><td>${esc(s.itemType)}</td><td style="text-align:right;">${s.volumeCBM}</td><td style="text-align:right;">${fmtINR(s.saleValue)}</td><td style="text-align:right;color:${due>0?'#dc2626':'#047857'};">${fmtINR(due)}</td></tr>`; }); }
+  inner += `<table class="slice-table" style="width:100%;margin-bottom:20px;"><thead><tr><th>Date</th><th>Customer</th><th>Item</th><th style="text-align:right;">Vol</th><th style="text-align:right;">Value</th><th style="text-align:right;">Paid</th><th style="text-align:right;">Due</th></tr></thead><tbody>`;
+  if (monthSales.length===0){ inner += `<tr><td colspan="7" style="text-align:center;color:#a8a29e;padding:10px;">No sales this month.</td></tr>`; }
+  else { monthSales.forEach(s=>{ const paid=paidOf(s); const due=dueOf(s); inner += `<tr><td>${esc(s.date)}</td><td>${esc(s.customer)}</td><td>${esc(s.itemType)}</td><td style="text-align:right;">${s.volumeCBM}</td><td style="text-align:right;">${fmtINR(s.saleValue)}</td><td style="text-align:right;color:#047857;">${fmtINR(paid)}</td><td style="text-align:right;color:${due>0?'#dc2626':'#047857'};">${fmtINR(due)}</td></tr>`; }); }
   inner += `</tbody></table>`;
 
   inner += `<h3 style="font-size:13px;text-transform:uppercase;color:#57534e;margin:0 0 10px;">Collections — Full Month (Total: ${fmtINR(totalColl)})</h3>`;
-  inner += `<table class="slice-table" style="width:100%;"><thead><tr><th>Date</th><th>Customer</th><th>Mode</th><th style="text-align:right;">Amount</th></tr></thead><tbody>`;
-  if (monthColl.length===0){ inner += `<tr><td colspan="4" style="text-align:center;color:#a8a29e;padding:10px;">No collections this month.</td></tr>`; }
-  else { monthColl.forEach(c=>{ inner += `<tr><td>${esc(c.date)}</td><td>${esc(c.customer)}</td><td>${esc(c.mode)}</td><td style="text-align:right;">${fmtINR(c.amount)}</td></tr>`; }); }
+  inner += `<table class="slice-table" style="width:100%;"><thead><tr><th>Date</th><th>Customer</th><th>Mode</th><th>Source</th><th style="text-align:right;">Amount</th></tr></thead><tbody>`;
+  if (monthColl.length===0){ inner += `<tr><td colspan="5" style="text-align:center;color:#a8a29e;padding:10px;">No collections this month.</td></tr>`; }
+  else { monthColl.forEach(c=>{ inner += `<tr><td>${esc(c.date)}</td><td>${esc(c.customer)}</td><td>${esc(c.mode)}</td><td>${c.linkedSaleId?('Sale — '+esc(c.linkedNote||'linked')):'Direct'}</td><td style="text-align:right;">${fmtINR(c.amount)}</td></tr>`; }); }
   inner += `</tbody></table>`;
 
   return `<div id="summaryCaptureFull" style="position:absolute;left:-9999px;top:0;width:820px;background:#fff;padding:24px;font-family:inherit;color:#1c1917;">${inner}</div>`;
@@ -566,13 +614,14 @@ function downloadExcel(){
   const monthColl = state.collections.filter(c=>c.month===state.month);
 
   const salesRows = monthSales.map(s=>{
-    const due = (Number(s.saleValue)||0) - (Number(s.paymentReceived)||0);
+    const paid = paidOf(s);
+    const due = dueOf(s);
     return {
       'Date': s.date, 'Type': s.salesType, 'Customer': s.customer, 'Item': s.itemType, 'Mass ID': s.massId||'',
-      'Volume (CBM)': s.volumeCBM, 'Rate': s.rate, 'Sale Value': s.saleValue, 'Paid': s.paymentReceived||0, 'Due': due, 'Note': s.note||''
+      'Volume (CBM)': s.volumeCBM, 'Rate': s.rate, 'Sale Value': s.saleValue, 'Paid': paid, 'Due': due, 'Note': s.note||''
     };
   });
-  const collRows = monthColl.map(c=>({ 'Date': c.date, 'Customer': c.customer, 'Mode': c.mode, 'Amount': c.amount, 'Note': c.note||'' }));
+  const collRows = monthColl.map(c=>({ 'Date': c.date, 'Customer': c.customer, 'Mode': c.mode, 'Source': c.linkedSaleId ? `Sale — ${c.linkedNote||'linked'}` : 'Direct', 'Amount': c.amount, 'Note': c.note||'' }));
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(salesRows), 'Sales');
