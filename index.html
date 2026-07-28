@@ -236,9 +236,9 @@ function renderSalesTab(){
   const totalDue = totalValue - totalPaid;
 
   let html = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
-    <button class="btn teal" onclick="downloadSummaryImage()">📷 Download as Image</button>
-    <button class="btn teal" onclick="downloadSummaryPDF()">📄 Download as PDF</button>
-    <button class="btn teal" onclick="downloadExcel()">⬇ Download Excel</button>
+    <button class="btn amber" onclick="downloadSummaryImage()">📷 Download as Image</button>
+    <button class="btn amber" onclick="downloadSummaryPDF()">📄 Download as PDF</button>
+    <button class="btn amber" onclick="downloadExcel()">⬇ Download Excel</button>
   </div>`;
 
   html += renderTargetCard(monthSales);
