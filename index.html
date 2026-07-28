@@ -63,6 +63,9 @@
   .section-title { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:#57534e; margin:0 0 10px; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
 <body>
 
@@ -232,7 +235,13 @@ function renderSalesTab(){
   const totalPaid = monthSales.reduce((a,s)=>a+(Number(s.paymentReceived)||0),0);
   const totalDue = totalValue - totalPaid;
 
-  let html = renderTargetCard(monthSales);
+  let html = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+    <button class="btn teal" onclick="downloadSummaryImage()">📷 Download as Image</button>
+    <button class="btn teal" onclick="downloadSummaryPDF()">📄 Download as PDF</button>
+    <button class="btn teal" onclick="downloadExcel()">⬇ Download Excel</button>
+  </div>`;
+
+  html += renderTargetCard(monthSales);
 
   html += `
     <div class="stat-row">
@@ -273,6 +282,7 @@ function renderSalesTab(){
     });
   }
   html += `</tbody></table></div>`;
+  html += renderFullCaptureBlock();
   document.getElementById('app').innerHTML = html;
   refreshDatalists();
 }
@@ -449,6 +459,114 @@ async function deleteColl(id){
 }
 
 // ================= MAIN RENDER =================
+function renderFullCaptureBlock(){
+  const monthSales = state.sales.filter(s=>s.month===state.month);
+  const monthColl = state.collections.filter(c=>c.month===state.month);
+  const todayStr = today();
+  const todaySales = state.sales.filter(s=>s.date===todayStr);
+  const existing = getTarget(state.month);
+  const targetVol = Number(existing?.targetVolume)||0;
+  const targetRev = Number(existing?.targetRevenue)||0;
+  const achievedVol = monthSales.reduce((a,s)=>a+(Number(s.volumeCBM)||0),0);
+  const achievedRev = monthSales.reduce((a,s)=>a+(Number(s.saleValue)||0),0);
+  const totalPaid = monthSales.reduce((a,s)=>a+(Number(s.paymentReceived)||0),0);
+  const totalDue = achievedRev - totalPaid;
+  const totalColl = monthColl.reduce((a,c)=>a+(Number(c.amount)||0),0);
+
+  let inner = `<h2 style="margin:0 0 4px;font-size:18px;">VKG Sales &amp; Collections Summary</h2>`;
+  inner += `<p style="margin:0 0 16px;font-size:12px;color:#78716c;">${esc(state.month)} — generated ${esc(todayStr)}</p>`;
+
+  inner += `<h3 style="font-size:13px;text-transform:uppercase;color:#57534e;margin:0 0 10px;">Target vs Achievement</h3>`;
+  inner += `<table class="slice-table" style="width:100%;margin-bottom:20px;"><thead><tr><th>Metric</th><th style="text-align:right;">Target</th><th style="text-align:right;">Achieved</th><th style="text-align:right;">Balance</th></tr></thead><tbody>
+    <tr><td>Volume (CBM)</td><td style="text-align:right;">${targetVol.toLocaleString('en-IN')}</td><td style="text-align:right;">${achievedVol.toLocaleString('en-IN')}</td><td style="text-align:right;">${Math.max(targetVol-achievedVol,0).toLocaleString('en-IN')}</td></tr>
+    <tr><td>Revenue (₹)</td><td style="text-align:right;">${fmtINR(targetRev)}</td><td style="text-align:right;">${fmtINR(achievedRev)}</td><td style="text-align:right;">${fmtINR(Math.max(targetRev-achievedRev,0))}</td></tr>
+  </tbody></table>`;
+
+  inner += `<h3 style="font-size:13px;text-transform:uppercase;color:#57534e;margin:0 0 10px;">Today's Sales — ${esc(todayStr)}</h3>`;
+  inner += `<table class="slice-table" style="width:100%;margin-bottom:20px;"><thead><tr><th>Customer</th><th>Item</th><th style="text-align:right;">Vol</th><th style="text-align:right;">Value</th><th style="text-align:right;">Paid</th></tr></thead><tbody>`;
+  if (todaySales.length===0){ inner += `<tr><td colspan="5" style="text-align:center;color:#a8a29e;padding:10px;">No sales logged today yet.</td></tr>`; }
+  else { todaySales.forEach(s=>{ inner += `<tr><td>${esc(s.customer)}</td><td>${esc(s.itemType)}</td><td style="text-align:right;">${s.volumeCBM}</td><td style="text-align:right;">${fmtINR(s.saleValue)}</td><td style="text-align:right;">${fmtINR(s.paymentReceived)}</td></tr>`; }); }
+  inner += `</tbody></table>`;
+
+  inner += `<h3 style="font-size:13px;text-transform:uppercase;color:#57534e;margin:0 0 10px;">Confirmed Sales — Full Month (${monthSales.length})</h3>`;
+  inner += `<table class="slice-table" style="width:100%;margin-bottom:20px;"><thead><tr><th>Date</th><th>Customer</th><th>Item</th><th style="text-align:right;">Vol</th><th style="text-align:right;">Value</th><th style="text-align:right;">Due</th></tr></thead><tbody>`;
+  if (monthSales.length===0){ inner += `<tr><td colspan="6" style="text-align:center;color:#a8a29e;padding:10px;">No sales this month.</td></tr>`; }
+  else { monthSales.forEach(s=>{ const due=(Number(s.saleValue)||0)-(Number(s.paymentReceived)||0); inner += `<tr><td>${esc(s.date)}</td><td>${esc(s.customer)}</td><td>${esc(s.itemType)}</td><td style="text-align:right;">${s.volumeCBM}</td><td style="text-align:right;">${fmtINR(s.saleValue)}</td><td style="text-align:right;color:${due>0?'#dc2626':'#047857'};">${fmtINR(due)}</td></tr>`; }); }
+  inner += `</tbody></table>`;
+
+  inner += `<h3 style="font-size:13px;text-transform:uppercase;color:#57534e;margin:0 0 10px;">Collections — Full Month (Total: ${fmtINR(totalColl)})</h3>`;
+  inner += `<table class="slice-table" style="width:100%;"><thead><tr><th>Date</th><th>Customer</th><th>Mode</th><th style="text-align:right;">Amount</th></tr></thead><tbody>`;
+  if (monthColl.length===0){ inner += `<tr><td colspan="4" style="text-align:center;color:#a8a29e;padding:10px;">No collections this month.</td></tr>`; }
+  else { monthColl.forEach(c=>{ inner += `<tr><td>${esc(c.date)}</td><td>${esc(c.customer)}</td><td>${esc(c.mode)}</td><td style="text-align:right;">${fmtINR(c.amount)}</td></tr>`; }); }
+  inner += `</tbody></table>`;
+
+  return `<div id="summaryCaptureFull" style="position:absolute;left:-9999px;top:0;width:820px;background:#fff;padding:24px;font-family:inherit;color:#1c1917;">${inner}</div>`;
+}
+
+async function downloadSummaryImage(){
+  if (typeof html2canvas === 'undefined'){ alert('Image export library did not load — check your internet connection and try again.'); return; }
+  const el = document.getElementById('summaryCaptureFull');
+  if (!el){ alert('Nothing to capture yet.'); return; }
+  try {
+    const canvas = await html2canvas(el, { backgroundColor: '#ffffff', scale: 2 });
+    const link = document.createElement('a');
+    link.download = `VKG_Sales_Summary_${state.month}.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+    flash('Summary image downloaded');
+  } catch(e){ console.error(e); alert('Could not generate the image — please try again.'); }
+}
+
+async function downloadSummaryPDF(){
+  if (typeof html2canvas === 'undefined' || typeof window.jspdf === 'undefined'){ alert('PDF export library did not load — check your internet connection and try again.'); return; }
+  const el = document.getElementById('summaryCaptureFull');
+  if (!el){ alert('Nothing to capture yet.'); return; }
+  try {
+    const canvas = await html2canvas(el, { backgroundColor: '#ffffff', scale: 2 });
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF('p', 'pt', 'a4');
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const imgWidth = pageWidth;
+    const imgHeight = (canvas.height * imgWidth) / canvas.width;
+    const imgData = canvas.toDataURL('image/png');
+
+    let heightLeft = imgHeight;
+    let position = 0;
+    pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+    heightLeft -= pageHeight;
+    while (heightLeft > 0){
+      position = heightLeft - imgHeight;
+      pdf.addPage();
+      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+      heightLeft -= pageHeight;
+    }
+    pdf.save(`VKG_Sales_Summary_${state.month}.pdf`);
+    flash('Summary PDF downloaded');
+  } catch(e){ console.error(e); alert('Could not generate the PDF — please try again.'); }
+}
+
+function downloadExcel(){
+  if (typeof XLSX === 'undefined'){ alert('Excel export library did not load — check your internet connection and try again.'); return; }
+  const monthSales = state.sales.filter(s=>s.month===state.month);
+  const monthColl = state.collections.filter(c=>c.month===state.month);
+
+  const salesRows = monthSales.map(s=>{
+    const due = (Number(s.saleValue)||0) - (Number(s.paymentReceived)||0);
+    return {
+      'Date': s.date, 'Type': s.salesType, 'Customer': s.customer, 'Item': s.itemType, 'Mass ID': s.massId||'',
+      'Volume (CBM)': s.volumeCBM, 'Rate': s.rate, 'Sale Value': s.saleValue, 'Paid': s.paymentReceived||0, 'Due': due, 'Note': s.note||''
+    };
+  });
+  const collRows = monthColl.map(c=>({ 'Date': c.date, 'Customer': c.customer, 'Mode': c.mode, 'Amount': c.amount, 'Note': c.note||'' }));
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(salesRows), 'Sales');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(collRows), 'Collections');
+  XLSX.writeFile(wb, `VKG_Sales_${state.month}.xlsx`);
+  flash('Excel downloaded');
+}
+
 function render(){
   if (state.loading){ document.getElementById('app').innerHTML = '<div class="empty">Loading…</div>'; return; }
   ['sales','collection'].forEach(t=>{
