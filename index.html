@@ -310,21 +310,35 @@ function renderSaleForm(){
         </div>
       </label>
       <label><span class="lbl">Mass ID ${f.itemType==='Loose Blocks'?'(optional)':''}</span><input list="massIdList" value="${esc(f.massId)}" onchange="saleForm.massId=this.value" placeholder="e.g. E 5"></label>
-      <label><span class="lbl">Volume (CBM)</span><input type="number" step="any" value="${esc(f.volumeCBM)}" oninput="saleForm.volumeCBM=this.value; renderSalesTab();"></label>
+      <label><span class="lbl">Volume (CBM)</span><input type="number" step="any" value="${esc(f.volumeCBM)}" oninput="saleForm.volumeCBM=this.value; updateSaleCalcs();"></label>
       <label><span class="lbl">Rate (₹/CBM)</span>
         ${f.salesType==='Export'
-          ? `<input type="number" step="any" value="${esc(f.rate)}" oninput="saleForm.rate=this.value; renderSalesTab();" placeholder="varies by customer">`
+          ? `<input type="number" step="any" value="${esc(f.rate)}" oninput="saleForm.rate=this.value; updateSaleCalcs();" placeholder="varies by customer">`
           : `<input value="₹${LOCAL_RATE.toLocaleString('en-IN')} (fixed)" disabled style="background:#f5f5f4;color:#a8a29e;">`}
       </label>
-      <label><span class="lbl">Sale Value (auto)</span><input value="${fmtINR(saleValue)}" disabled style="background:#f5f5f4;font-family:ui-monospace,monospace;"></label>
-      <label><span class="lbl">Payment Received (₹)</span><input type="number" step="any" value="${esc(f.paymentReceived)}" oninput="saleForm.paymentReceived=this.value; renderSalesTab();" placeholder="0"></label>
-      <label><span class="lbl">Due (auto)</span><input value="${fmtINR(due)}" disabled style="background:${due>0?'#fee2e2':'#ecfdf5'};color:${due>0?'#dc2626':'#047857'};font-family:ui-monospace,monospace;"></label>
+      <label><span class="lbl">Sale Value (auto)</span><input id="saleValueField" value="${fmtINR(saleValue)}" disabled style="background:#f5f5f4;font-family:ui-monospace,monospace;"></label>
+      <label><span class="lbl">Payment Received (₹)</span><input type="number" step="any" value="${esc(f.paymentReceived)}" oninput="saleForm.paymentReceived=this.value; updateSaleCalcs();" placeholder="0"></label>
+      <label><span class="lbl">Due (auto)</span><input id="dueField" value="${fmtINR(due)}" disabled style="background:${due>0?'#fee2e2':'#ecfdf5'};color:${due>0?'#dc2626':'#047857'};font-family:ui-monospace,monospace;"></label>
       <label><span class="lbl">Note (optional)</span><input value="${esc(f.note)}" onchange="saleForm.note=this.value" placeholder="e.g. S3, S4"></label>
     </div>
     <button class="btn amber" onclick="submitSale()">${f.id ? 'Save changes' : 'Log sale'}</button>
     ${f.id ? `<button class="btn ghost" onclick="cancelSaleEdit()">Cancel</button>` : ''}
   </div>`;
 }
+function updateSaleCalcs(){
+  const f = saleForm;
+  const saleValue = (Number(f.volumeCBM)||0) * (Number(f.rate)||0);
+  const due = saleValue - (Number(f.paymentReceived)||0);
+  const sv = document.getElementById('saleValueField');
+  const dv = document.getElementById('dueField');
+  if (sv) sv.value = fmtINR(saleValue);
+  if (dv){
+    dv.value = fmtINR(due);
+    dv.style.background = due>0 ? '#fee2e2' : '#ecfdf5';
+    dv.style.color = due>0 ? '#dc2626' : '#047857';
+  }
+}
+
 function setSaleType(t){ saleForm.salesType = t; saleForm.rate = t==='Local' ? LOCAL_RATE : ''; renderSalesTab(); }
 function setSaleItem(t){ saleForm.itemType = t; renderSalesTab(); }
 async function submitSale(){
