@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VKG Sales &amp; Collections MIS — Lite</title>
+<style>
+  :root {
+    --amber: #b45309; --amber-bg: #fef3c7;
+    --teal: #0f766e; --teal-bg: #ccfbf1;
+    --emerald: #047857; --emerald-bg: #d1fae5;
+    --stone: #44403c; --stone-bg: #f5f5f4; --stone-border:#e7e5e4;
+    --red: #dc2626; --red-bg:#fee2e2;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:var(--stone-bg); color:#1c1917; }
+  header { background:#1c1917; color:#fafaf9; padding:16px; }
+  header .row { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; max-width:900px; margin:0 auto; }
+  header h1 { font-size:18px; margin:0; }
+  header p { margin:2px 0 0; font-size:11px; letter-spacing:1px; text-transform:uppercase; color:#fbbf24; }
+  .role-select { display:flex; align-items:center; gap:6px; font-size:12px; color:#d6d3d1; }
+  select, input, textarea { font-family:inherit; font-size:14px; padding:8px; border-radius:8px; border:1px solid #d6d3d1; width:100%; background:white; }
+  .bar { background:white; border-bottom:1px solid var(--stone-border); position:sticky; top:0; z-index:5; }
+  .bar .row { max-width:900px; margin:0 auto; padding:0 16px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+  .tabs { display:flex; gap:2px; overflow-x:auto; }
+  .tab-btn { padding:12px 16px; background:none; border:none; border-bottom:3px solid transparent; font-size:14px; font-weight:600; color:#78716c; cursor:pointer; white-space:nowrap; }
+  .tab-btn.active.sales { border-color:var(--amber); color:var(--amber); }
+  .tab-btn.active.collection { border-color:var(--emerald); color:var(--emerald); }
+  main { max-width:900px; margin:0 auto; padding:16px; padding-bottom:60px; }
+  .card { background:white; border:1px solid var(--stone-border); border-radius:12px; padding:16px; margin-bottom:16px; box-shadow:0 1px 2px rgba(0,0,0,0.04); }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:0 16px; }
+  @media (max-width:600px){ .grid{ grid-template-columns:1fr; } }
+  label { display:block; margin-bottom:12px; }
+  label span.lbl { display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:#78716c; margin-bottom:4px; }
+  .pill-row { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+  .pill { padding:7px 14px; border-radius:999px; border:1px solid #d6d3d1; background:white; font-size:13px; font-weight:600; cursor:pointer; color:#57534e; }
+  .pill.active.amber { background:var(--amber); border-color:var(--amber); color:white; }
+  .btn { display:inline-flex; align-items:center; gap:6px; padding:10px 18px; border-radius:8px; border:none; font-size:14px; font-weight:600; cursor:pointer; color:white; }
+  .btn.amber { background:var(--amber); } .btn.amber:hover{ background:#92400e; }
+  .btn.emerald { background:var(--emerald); } .btn.emerald:hover{ background:#065f46; }
+  .btn.ghost { background:white; color:#57534e; border:1px solid #d6d3d1; }
+  .stat-row { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-bottom:16px; }
+  @media(min-width:600px){ .stat-row{ grid-template-columns:repeat(4,1fr); } }
+  .stat { background:white; border:1px solid var(--stone-border); border-radius:10px; padding:12px; border-top:4px solid var(--stone); }
+  .stat.amber{ border-top-color:var(--amber); } .stat.teal{ border-top-color:var(--teal); } .stat.emerald{ border-top-color:var(--emerald); } .stat.red{ border-top-color:var(--red); }
+  .stat .lbl { font-size:10px; text-transform:uppercase; color:#78716c; letter-spacing:0.5px; }
+  .stat .val { font-family:ui-monospace,monospace; font-weight:700; font-size:16px; margin-top:2px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; background:white; }
+  th { text-align:left; padding:8px; background:var(--stone-bg); font-size:10px; text-transform:uppercase; color:#78716c; letter-spacing:0.5px; }
+  td { padding:8px; border-top:1px solid var(--stone-border); }
+  td.num { text-align:right; font-family:ui-monospace,monospace; }
+  .table-wrap { overflow-x:auto; border:1px solid var(--stone-border); border-radius:12px; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; }
+  .badge.stone{ background:var(--stone-bg); color:#57534e; } .badge.amber{ background:var(--amber-bg); color:var(--amber); }
+  .badge.teal{ background:var(--teal-bg); color:var(--teal); } .badge.emerald{ background:var(--emerald-bg); color:var(--emerald); } .badge.red{ background:var(--red-bg); color:var(--red); }
+  .actions { display:flex; gap:8px; justify-content:flex-end; }
+  .icon-btn { background:none; border:none; cursor:pointer; font-size:15px; color:#a8a29e; padding:2px; }
+  .icon-btn:hover { color:#44403c; }
+  .icon-btn.danger:hover { color:var(--red); }
+  .empty { text-align:center; color:#a8a29e; padding:24px; }
+  .toast { position:fixed; bottom:16px; right:16px; background:#1c1917; color:white; padding:10px 16px; border-radius:8px; font-size:13px; z-index:50; }
+  .hint { font-size:12px; color:#a8a29e; margin-top:8px; }
+  .section-title { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:#57534e; margin:0 0 10px; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+
+<header>
+  <div class="row">
+    <div>
+      <h1>VKG Sales &amp; Collections MIS <span style="font-weight:400;font-size:13px;color:#a8a29e;">(Lite)</span></h1>
+      <p>Sales · Collection</p>
+    </div>
+    <div class="role-select">
+      Role:
+      <select id="roleSelect" onchange="setRole(this.value)">
+        <option value="Staff">Staff</option>
+        <option value="Admin">Admin</option>
+      </select>
+    </div>
+  </div>
+</header>
+
+<div class="bar">
+  <div class="row">
+    <div class="tabs">
+      <button class="tab-btn sales" id="tabBtn-sales" onclick="setTab('sales')">Sales</button>
+      <button class="tab-btn collection" id="tabBtn-collection" onclick="setTab('collection')">Collections</button>
+    </div>
+    <input type="month" id="monthPicker" onchange="setMonth(this.value)" style="width:auto;">
+  </div>
+</div>
+
+<main id="app"></main>
+<div id="toast" style="display:none;" class="toast"></div>
+
+<datalist id="customerList"></datalist>
+<datalist id="massIdList"></datalist>
+
+<script>
+// ---------- storage helpers ----------
+const KEYS = { MASTER:'lite-sales-master', SALES:'lite-sales-sales', COLLECTION:'lite-sales-collection', TARGET:'lite-sales-target' };
+// ---- Supabase connection (same project as the Production app — different key names, no clash) ----
+const SUPABASE_URL = 'https://kfalpjblwfhlcqmxbwkc.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_LtkaUUlFOJ1DYCq4J1jXSA_63dmARUe';
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+async function loadKey(key, fallback){
+  try {
+    const { data, error } = await sb.from('app_storage').select('value').eq('key', key).maybeSingle();
+    if (error) throw error;
+    return data ? data.value : fallback;
+  } catch(e){ console.error('load failed', key, e); return fallback; }
+}
+async function saveKey(key, value){
+  try {
+    const { error } = await sb.from('app_storage').upsert({ key, value, updated_at: new Date().toISOString() });
+    if (error) throw error;
+    return true;
+  } catch(e){ console.error('save failed', key, e); return false; }
+}
+
+// ---------- state ----------
+let state = {
+  role: 'Staff',
+  tab: 'sales',
+  month: new Date().toISOString().slice(0,7),
+  master: { customers: [], massIds: [] },
+  sales: [],
+  collections: [],
+  targets: [], // [{month, targetVolume, targetRevenue}]
+  loading: true,
+};
+
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
+const today = () => new Date().toISOString().slice(0,10);
+const monthOf = d => (d||'').slice(0,7);
+const fmtINR = n => '\u20B9' + Number(n||0).toLocaleString('en-IN', {maximumFractionDigits:2});
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const LOCAL_RATE = 24000;
+
+function flash(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.style.display='block';
+  setTimeout(()=>{ t.style.display='none'; }, 2000);
+}
+
+async function init(){
+  state.master = await loadKey(KEYS.MASTER, { customers: [], massIds: [] });
+  state.sales = await loadKey(KEYS.SALES, []);
+  state.collections = await loadKey(KEYS.COLLECTION, []);
+  state.targets = await loadKey(KEYS.TARGET, []);
+  state.loading = false;
+  document.getElementById('monthPicker').value = state.month;
+  render();
+}
+init();
+
+function setRole(r){ state.role = r; state.editingId = null; render(); }
+function setTab(t){ state.tab = t; render(); }
+function setMonth(m){ state.month = m; render(); }
+
+async function addCustomer(name){
+  if (!name || state.master.customers.includes(name)) return;
+  state.master.customers = [...state.master.customers, name];
+  await saveKey(KEYS.MASTER, state.master);
+}
+async function addMassId(id){
+  if (!id || state.master.massIds.includes(id)) return;
+  state.master.massIds = [...state.master.massIds, id];
+  await saveKey(KEYS.MASTER, state.master);
+}
+function refreshDatalists(){
+  document.getElementById('customerList').innerHTML = state.master.customers.map(c=>`<option value="${esc(c)}">`).join('');
+  document.getElementById('massIdList').innerHTML = state.master.massIds.map(m=>`<option value="${esc(m)}">`).join('');
+}
+
+// ================= TARGET (simple, per-month) =================
+let targetDraft = null; // { targetVolume, targetRevenue } while editing
+function getTarget(month){ return state.targets.find(t=>t.month===month); }
+function renderTargetCard(monthSales){
+  const existing = getTarget(state.month);
+  if (targetDraft === null){
+    targetDraft = { targetVolume: existing?.targetVolume ?? '', targetRevenue: existing?.targetRevenue ?? '' };
+  }
+  const achievedVol = monthSales.reduce((a,s)=>a+(Number(s.volumeCBM)||0),0);
+  const achievedRev = monthSales.reduce((a,s)=>a+(Number(s.saleValue)||0),0);
+  const targetVol = Number(existing?.targetVolume)||0;
+  const targetRev = Number(existing?.targetRevenue)||0;
+  const balVol = Math.max(targetVol - achievedVol, 0);
+  const balRev = Math.max(targetRev - achievedRev, 0);
+
+  return `
+  <div class="card">
+    <p class="section-title">Sales Target vs Achievement</p>
+    <div class="grid" style="margin-bottom:8px;">
+      <label><span class="lbl">Target Volume (CBM)</span><input type="number" step="any" value="${esc(targetDraft.targetVolume)}" oninput="targetDraft.targetVolume=this.value"></label>
+      <label><span class="lbl">Target Revenue (₹)</span><input type="number" step="any" value="${esc(targetDraft.targetRevenue)}" oninput="targetDraft.targetRevenue=this.value"></label>
+    </div>
+    <button class="btn amber" onclick="saveTarget()">${existing ? 'Update target' : 'Save target'}</button>
+    <div class="stat-row" style="margin-top:16px;">
+      <div class="stat teal"><div class="lbl">Target Volume</div><div class="val">${targetVol.toLocaleString('en-IN')} CBM</div></div>
+      <div class="stat amber"><div class="lbl">Achieved Volume</div><div class="val">${achievedVol.toLocaleString('en-IN')} CBM</div></div>
+      <div class="stat ${balVol>0?'red':'emerald'}"><div class="lbl">Balance Volume</div><div class="val">${balVol.toLocaleString('en-IN')} CBM</div></div>
+      <div class="stat stone"><div class="lbl">&nbsp;</div><div class="val">&nbsp;</div></div>
+      <div class="stat teal"><div class="lbl">Target Revenue</div><div class="val">${fmtINR(targetRev)}</div></div>
+      <div class="stat amber"><div class="lbl">Achieved Revenue</div><div class="val">${fmtINR(achievedRev)}</div></div>
+      <div class="stat ${balRev>0?'red':'emerald'}"><div class="lbl">Balance Revenue</div><div class="val">${fmtINR(balRev)}</div></div>
+      <div class="stat stone"><div class="lbl">&nbsp;</div><div class="val">&nbsp;</div></div>
+    </div>
+  </div>`;
+}
+async function saveTarget(){
+  const idx = state.targets.findIndex(t=>t.month===state.month);
+  const rec = { month: state.month, targetVolume: Number(targetDraft.targetVolume)||0, targetRevenue: Number(targetDraft.targetRevenue)||0 };
+  if (idx>=0) state.targets[idx] = rec; else state.targets.push(rec);
+  await saveKey(KEYS.TARGET, state.targets);
+  flash('Target saved');
+  targetDraft = null;
+  renderSalesTab();
+}
+
+// ================= SALES =================
+function blankSale(){ return { id:null, date:today(), salesType:'Local', customer:'', itemType:'Full Mass', massId:'', volumeCBM:'', rate:LOCAL_RATE, paymentReceived:'', note:'' }; }
+let saleForm = blankSale();
+
+function renderSalesTab(){
+  const monthSales = state.sales.filter(s=>s.month===state.month);
+  const totalVol = monthSales.reduce((a,s)=>a+(Number(s.volumeCBM)||0),0);
+  const totalValue = monthSales.reduce((a,s)=>a+(Number(s.saleValue)||0),0);
+  const totalPaid = monthSales.reduce((a,s)=>a+(Number(s.paymentReceived)||0),0);
+  const totalDue = totalValue - totalPaid;
+
+  let html = renderTargetCard(monthSales);
+
+  html += `
+    <div class="stat-row">
+      <div class="stat stone"><div class="lbl">Sales this month</div><div class="val">${monthSales.length}</div></div>
+      <div class="stat teal"><div class="lbl">Volume</div><div class="val">${totalVol.toLocaleString('en-IN')} CBM</div></div>
+      <div class="stat amber"><div class="lbl">Sale Value</div><div class="val">${fmtINR(totalValue)}</div></div>
+      <div class="stat red"><div class="lbl">Due</div><div class="val">${fmtINR(totalDue)}</div></div>
+    </div>`;
+
+  html += renderSaleForm();
+
+  html += `<div class="table-wrap"><table><thead><tr>
+    <th>Date</th><th>Type</th><th>Customer</th><th>Mass ID</th><th>Item</th>
+    <th style="text-align:right;">Vol</th><th style="text-align:right;">Rate</th><th style="text-align:right;">Value</th>
+    <th style="text-align:right;">Paid</th><th style="text-align:right;">Due</th><th></th>
+    </tr></thead><tbody>`;
+  if (monthSales.length===0){
+    html += `<tr><td colspan="11" class="empty">No sales logged this month yet.</td></tr>`;
+  } else {
+    monthSales.slice().reverse().forEach(s=>{
+      const due = (Number(s.saleValue)||0) - (Number(s.paymentReceived)||0);
+      html += `<tr>
+        <td>${esc(s.date)}</td>
+        <td><span class="badge ${s.salesType==='Export'?'teal':'stone'}">${esc(s.salesType)}</span></td>
+        <td>${esc(s.customer)}</td>
+        <td style="font-family:ui-monospace,monospace;">${esc(s.massId||'—')}</td>
+        <td><span class="badge stone">${esc(s.itemType)}</span>${s.note?` <span class="hint">(${esc(s.note)})</span>`:''}</td>
+        <td class="num">${s.volumeCBM}</td>
+        <td class="num">₹${Number(s.rate).toLocaleString('en-IN')}</td>
+        <td class="num">${fmtINR(s.saleValue)}</td>
+        <td class="num" style="color:var(--emerald);">${fmtINR(s.paymentReceived)}</td>
+        <td class="num" style="color:${due>0?'var(--red)':'var(--emerald)'};">${fmtINR(due)}</td>
+        <td><div class="actions">
+          <button class="icon-btn" onclick="editSale('${s.id}')" title="Edit">✏️</button>
+          ${state.role==='Admin' ? `<button class="icon-btn danger" onclick="deleteSale('${s.id}')" title="Delete">🗑️</button>` : ''}
+        </div></td>
+      </tr>`;
+    });
+  }
+  html += `</tbody></table></div>`;
+  document.getElementById('app').innerHTML = html;
+  refreshDatalists();
+}
+
+function renderSaleForm(){
+  const f = saleForm;
+  const saleValue = (Number(f.volumeCBM)||0) * (Number(f.rate)||0);
+  const due = saleValue - (Number(f.paymentReceived)||0);
+  return `
+  <div class="card">
+    <div class="grid">
+      <label><span class="lbl">Date</span><input type="date" value="${esc(f.date)}" onchange="saleForm.date=this.value"></label>
+      <label><span class="lbl">Sales Type</span>
+        <div class="pill-row">
+          <button class="pill ${f.salesType==='Local'?'active amber':''}" onclick="setSaleType('Local')">Local</button>
+          <button class="pill ${f.salesType==='Export'?'active amber':''}" onclick="setSaleType('Export')">Export</button>
+        </div>
+      </label>
+      <label><span class="lbl">Customer</span><input list="customerList" value="${esc(f.customer)}" onchange="saleForm.customer=this.value" placeholder="Customer name"></label>
+      <label><span class="lbl">Item</span>
+        <div class="pill-row">
+          <button class="pill ${f.itemType==='Full Mass'?'active amber':''}" onclick="setSaleItem('Full Mass')">Full Mass</button>
+          <button class="pill ${f.itemType==='Slices'?'active amber':''}" onclick="setSaleItem('Slices')">Slices</button>
+          <button class="pill ${f.itemType==='Loose Blocks'?'active amber':''}" onclick="setSaleItem('Loose Blocks')">Loose Blocks</button>
+        </div>
+      </label>
+      <label><span class="lbl">Mass ID ${f.itemType==='Loose Blocks'?'(optional)':''}</span><input list="massIdList" value="${esc(f.massId)}" onchange="saleForm.massId=this.value" placeholder="e.g. E 5"></label>
+      <label><span class="lbl">Volume (CBM)</span><input type="number" step="any" value="${esc(f.volumeCBM)}" oninput="saleForm.volumeCBM=this.value; renderSalesTab();"></label>
+      <label><span class="lbl">Rate (₹/CBM)</span>
+        ${f.salesType==='Export'
+          ? `<input type="number" step="any" value="${esc(f.rate)}" oninput="saleForm.rate=this.value; renderSalesTab();" placeholder="varies by customer">`
+          : `<input value="₹${LOCAL_RATE.toLocaleString('en-IN')} (fixed)" disabled style="background:#f5f5f4;color:#a8a29e;">`}
+      </label>
+      <label><span class="lbl">Sale Value (auto)</span><input value="${fmtINR(saleValue)}" disabled style="background:#f5f5f4;font-family:ui-monospace,monospace;"></label>
+      <label><span class="lbl">Payment Received (₹)</span><input type="number" step="any" value="${esc(f.paymentReceived)}" oninput="saleForm.paymentReceived=this.value; renderSalesTab();" placeholder="0"></label>
+      <label><span class="lbl">Due (auto)</span><input value="${fmtINR(due)}" disabled style="background:${due>0?'#fee2e2':'#ecfdf5'};color:${due>0?'#dc2626':'#047857'};font-family:ui-monospace,monospace;"></label>
+      <label><span class="lbl">Note (optional)</span><input value="${esc(f.note)}" onchange="saleForm.note=this.value" placeholder="e.g. S3, S4"></label>
+    </div>
+    <button class="btn amber" onclick="submitSale()">${f.id ? 'Save changes' : 'Log sale'}</button>
+    ${f.id ? `<button class="btn ghost" onclick="cancelSaleEdit()">Cancel</button>` : ''}
+  </div>`;
+}
+function setSaleType(t){ saleForm.salesType = t; saleForm.rate = t==='Local' ? LOCAL_RATE : ''; renderSalesTab(); }
+function setSaleItem(t){ saleForm.itemType = t; renderSalesTab(); }
+async function submitSale(){
+  const f = saleForm;
+  if (!f.date || !f.salesType || !f.customer || !f.volumeCBM || !f.rate){ alert('Please fill date, type, customer, volume and rate.'); return; }
+  if (f.itemType !== 'Loose Blocks' && !f.massId){ alert('Please enter the Mass ID.'); return; }
+  const saleValue = (Number(f.volumeCBM)||0) * (Number(f.rate)||0);
+  const rec = { ...f, saleValue, volumeCBM:Number(f.volumeCBM), rate:Number(f.rate), paymentReceived:Number(f.paymentReceived)||0, month: monthOf(f.date) };
+  if (f.id){
+    state.sales = state.sales.map(s => s.id===f.id ? { ...s, ...rec, editedBy: state.role } : s);
+  } else {
+    rec.id = uid(); rec.createdBy = state.role;
+    state.sales = [...state.sales, rec];
+  }
+  await saveKey(KEYS.SALES, state.sales);
+  await addCustomer(f.customer);
+  if (f.massId) await addMassId(f.massId);
+  saleForm = blankSale();
+  flash(f.id ? 'Sale updated' : 'Sale logged');
+  renderSalesTab();
+}
+function editSale(id){
+  const s = state.sales.find(x=>x.id===id);
+  if (!s) return;
+  saleForm = { ...s };
+  renderSalesTab();
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+function cancelSaleEdit(){ saleForm = blankSale(); renderSalesTab(); }
+async function deleteSale(id){
+  if (state.role !== 'Admin') return;
+  if (!confirm('Delete this sale? This cannot be undone.')) return;
+  state.sales = state.sales.filter(s=>s.id!==id);
+  await saveKey(KEYS.SALES, state.sales);
+  flash('Sale deleted');
+  renderSalesTab();
+}
+
+// ================= COLLECTION =================
+function blankColl(){ return { id:null, date:today(), customer:'', amount:'', mode:'Cash', note:'' }; }
+let collForm = blankColl();
+const MODES = ['Cash','Bank Transfer','Cheque','UPI'];
+
+function renderCollectionTab(){
+  const monthColl = state.collections.filter(c=>c.month===state.month);
+  const total = monthColl.reduce((a,c)=>a+(Number(c.amount)||0),0);
+
+  let html = `
+    <div class="stat-row">
+      <div class="stat emerald"><div class="lbl">Total Collected</div><div class="val">${fmtINR(total)}</div></div>
+      <div class="stat stone"><div class="lbl">Entries</div><div class="val">${monthColl.length}</div></div>
+    </div>`;
+
+  html += renderCollForm();
+
+  html += `<div class="table-wrap"><table><thead><tr>
+    <th>Date</th><th>Customer</th><th>Mode</th><th style="text-align:right;">Amount</th><th>Note</th><th></th>
+    </tr></thead><tbody>`;
+  if (monthColl.length===0){
+    html += `<tr><td colspan="6" class="empty">No collections logged this month yet.</td></tr>`;
+  } else {
+    monthColl.slice().reverse().forEach(c=>{
+      html += `<tr>
+        <td>${esc(c.date)}</td>
+        <td>${esc(c.customer)}</td>
+        <td>${esc(c.mode)}</td>
+        <td class="num" style="color:var(--emerald);">${fmtINR(c.amount)}</td>
+        <td style="color:#78716c;font-size:12px;">${esc(c.note||'—')}</td>
+        <td><div class="actions">
+          <button class="icon-btn" onclick="editColl('${c.id}')" title="Edit">✏️</button>
+          ${state.role==='Admin' ? `<button class="icon-btn danger" onclick="deleteColl('${c.id}')" title="Delete">🗑️</button>` : ''}
+        </div></td>
+      </tr>`;
+    });
+  }
+  html += `</tbody></table></div>
+  <p class="hint">For advance payments received before a sale exists, just note that in the Note field (e.g. "advance — sale pending") and reconcile manually once the sale is logged.</p>`;
+  document.getElementById('app').innerHTML = html;
+  refreshDatalists();
+}
+
+function renderCollForm(){
+  const f = collForm;
+  return `
+  <div class="card">
+    <div class="grid">
+      <label><span class="lbl">Date</span><input type="date" value="${esc(f.date)}" onchange="collForm.date=this.value"></label>
+      <label><span class="lbl">Customer</span><input list="customerList" value="${esc(f.customer)}" onchange="collForm.customer=this.value" placeholder="Customer name"></label>
+      <label><span class="lbl">Amount (₹)</span><input type="number" step="any" value="${esc(f.amount)}" oninput="collForm.amount=this.value"></label>
+      <label><span class="lbl">Mode</span>
+        <select onchange="collForm.mode=this.value">
+          ${MODES.map(m=>`<option value="${m}" ${f.mode===m?'selected':''}>${m}</option>`).join('')}
+        </select>
+      </label>
+      <label><span class="lbl">Note (optional)</span><input value="${esc(f.note)}" onchange="collForm.note=this.value" placeholder="e.g. advance for future sale"></label>
+    </div>
+    <button class="btn emerald" onclick="submitColl()">${f.id ? 'Save changes' : 'Log collection'}</button>
+    ${f.id ? `<button class="btn ghost" onclick="cancelCollEdit()">Cancel</button>` : ''}
+  </div>`;
+}
+async function submitColl(){
+  const f = collForm;
+  if (!f.date || !f.customer || !f.amount || !f.mode){ alert('Please fill date, customer, amount and mode.'); return; }
+  const rec = { ...f, amount:Number(f.amount), month: monthOf(f.date) };
+  if (f.id){
+    state.collections = state.collections.map(c => c.id===f.id ? { ...c, ...rec, editedBy: state.role } : c);
+  } else {
+    rec.id = uid(); rec.createdBy = state.role;
+    state.collections = [...state.collections, rec];
+  }
+  await saveKey(KEYS.COLLECTION, state.collections);
+  await addCustomer(f.customer);
+  collForm = blankColl();
+  flash(f.id ? 'Collection updated' : 'Collection logged');
+  renderCollectionTab();
+}
+function editColl(id){
+  const c = state.collections.find(x=>x.id===id);
+  if (!c) return;
+  collForm = { ...c };
+  renderCollectionTab();
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+function cancelCollEdit(){ collForm = blankColl(); renderCollectionTab(); }
+async function deleteColl(id){
+  if (state.role !== 'Admin') return;
+  if (!confirm('Delete this collection entry? This cannot be undone.')) return;
+  state.collections = state.collections.filter(c=>c.id!==id);
+  await saveKey(KEYS.COLLECTION, state.collections);
+  flash('Collection deleted');
+  renderCollectionTab();
+}
+
+// ================= MAIN RENDER =================
+function render(){
+  if (state.loading){ document.getElementById('app').innerHTML = '<div class="empty">Loading…</div>'; return; }
+  ['sales','collection'].forEach(t=>{
+    document.getElementById('tabBtn-'+t).classList.toggle('active', state.tab===t);
+  });
+  document.getElementById('roleSelect').value = state.role;
+  targetDraft = null;
+  if (state.tab==='sales') renderSalesTab();
+  else renderCollectionTab();
+}
+</script>
+</body>
+</html>
