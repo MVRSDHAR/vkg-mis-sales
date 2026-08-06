@@ -26,6 +26,7 @@
   .tab-btn { padding:12px 16px; background:none; border:none; border-bottom:3px solid transparent; font-size:14px; font-weight:600; color:#78716c; cursor:pointer; white-space:nowrap; }
   .tab-btn.active.sales { border-color:var(--amber); color:var(--amber); }
   .tab-btn.active.collection { border-color:var(--emerald); color:var(--emerald); }
+  .tab-btn.active.summary { border-color:var(--teal); color:var(--teal); }
   main { max-width:900px; margin:0 auto; padding:16px; padding-bottom:60px; }
   .card { background:white; border:1px solid var(--stone-border); border-radius:12px; padding:16px; margin-bottom:16px; box-shadow:0 1px 2px rgba(0,0,0,0.04); }
   .grid { display:grid; grid-template-columns:1fr 1fr; gap:0 16px; }
@@ -90,6 +91,7 @@
     <div class="tabs">
       <button class="tab-btn sales" id="tabBtn-sales" onclick="setTab('sales')">Sales</button>
       <button class="tab-btn collection" id="tabBtn-collection" onclick="setTab('collection')">Collections</button>
+      <button class="tab-btn summary" id="tabBtn-summary" onclick="setTab('summary')">Customer Summary</button>
     </div>
     <input type="month" id="monthPicker" onchange="setMonth(this.value)" style="width:auto;">
   </div>
@@ -190,6 +192,45 @@ function toggleProdMasses(){
 function setRole(r){ state.role = r; state.editingId = null; render(); }
 function setTab(t){ state.tab = t; render(); }
 function setMonth(m){ state.month = m; render(); }
+
+// ---- Flexible report period: either "this month" or a custom date range — used by
+// Sales and Collections tables/downloads, independently of the global month picker above.
+function lastDayOfMonth(m){
+  const [y, mo] = m.split('-').map(Number);
+  return new Date(y, mo, 0).getDate();
+}
+function monthBounds(m){
+  return { from: m + '-01', to: `${m}-${String(lastDayOfMonth(m)).padStart(2,'0')}` };
+}
+let salesPeriod = { mode:'month', month: state.month, from:'', to:'' };
+let collPeriod = { mode:'month', month: state.month, from:'', to:'' };
+function resolvePeriod(period){
+  if (period.mode==='range' && period.from){
+    return { from: period.from, to: period.to || period.from };
+  }
+  return monthBounds(period.month || state.month);
+}
+function setSalesPeriod(field, val){ salesPeriod = { ...salesPeriod, [field]: val }; renderSalesTab(); }
+function setCollPeriod(field, val){ collPeriod = { ...collPeriod, [field]: val }; renderCollectionTab(); }
+function renderPeriodPicker(period, setterName){
+  const b = resolvePeriod(period);
+  return `
+  <div class="subcard">
+    <div class="pill-row" style="margin-bottom:8px;">
+      <button class="pill ${period.mode==='month'?'active amber':''}" onclick="${setterName}('mode','month')">By Month</button>
+      <button class="pill ${period.mode==='range'?'active amber':''}" onclick="${setterName}('mode','range')">By Date Range</button>
+    </div>
+    ${period.mode==='month' ? `
+      <label style="margin-bottom:0;"><span class="lbl">Month</span><input type="month" value="${esc(period.month||state.month)}" onchange="${setterName}('month', this.value)"></label>
+    ` : `
+      <div class="grid" style="margin-bottom:0;">
+        <label><span class="lbl">From</span><input type="date" value="${esc(period.from)}" onchange="${setterName}('from', this.value)"></label>
+        <label style="margin-bottom:0;"><span class="lbl">To</span><input type="date" value="${esc(period.to)}" onchange="${setterName}('to', this.value)"></label>
+      </div>
+    `}
+    <p class="hint" style="margin-top:6px;">Showing ${esc(b.from)} to ${esc(b.to)}.</p>
+  </div>`;
+}
 
 async function addCustomer(name){
   if (!name || state.master.customers.includes(name)) return;
@@ -406,10 +447,12 @@ function blankSale(){ return { id:null, date:today(), salesType:'Local', custome
 let saleForm = blankSale();
 
 function renderSalesTab(){
-  const monthSales = state.sales.filter(s=>s.month===state.month);
-  const totalVol = monthSales.reduce((a,s)=>a+(Number(s.volumeCBM)||0),0);
-  const totalValue = monthSales.reduce((a,s)=>a+(Number(s.saleValue)||0),0);
-  const totalPaid = monthSales.reduce((a,s)=>a+paidOf(s),0);
+  const monthSales = state.sales.filter(s=>s.month===state.month); // still drives the Sales Target card, tied to the month picker
+  const periodBounds = resolvePeriod(salesPeriod);
+  const periodSales = state.sales.filter(s=>s.date>=periodBounds.from && s.date<=periodBounds.to); // drives the report table + downloads
+  const totalVol = periodSales.reduce((a,s)=>a+(Number(s.volumeCBM)||0),0);
+  const totalValue = periodSales.reduce((a,s)=>a+(Number(s.saleValue)||0),0);
+  const totalPaid = periodSales.reduce((a,s)=>a+paidOf(s),0);
   const totalDue = totalValue - totalPaid;
 
   let html = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
@@ -420,9 +463,12 @@ function renderSalesTab(){
 
   html += renderTargetCard(monthSales);
 
+  html += `<p class="section-title">Confirmed Sales Report</p>`;
+  html += renderPeriodPicker(salesPeriod, 'setSalesPeriod');
+
   html += `
     <div class="stat-row">
-      <div class="stat stone"><div class="lbl">Sales this month</div><div class="val">${monthSales.length}</div></div>
+      <div class="stat stone"><div class="lbl">Sales in period</div><div class="val">${periodSales.length}</div></div>
       <div class="stat teal"><div class="lbl">Volume</div><div class="val">${totalVol.toLocaleString('en-IN')} CBM</div></div>
       <div class="stat amber"><div class="lbl">Sale Value</div><div class="val">${fmtINR(totalValue)}</div></div>
       <div class="stat emerald"><div class="lbl">Collected</div><div class="val">${fmtINR(totalPaid)}</div></div>
@@ -436,10 +482,10 @@ function renderSalesTab(){
     <th style="text-align:right;">Vol</th><th style="text-align:right;">Rate</th><th style="text-align:right;">Value</th>
     <th style="text-align:right;">Paid</th><th style="text-align:right;">Due</th><th></th>
     </tr></thead><tbody>`;
-  if (monthSales.length===0){
-    html += `<tr><td colspan="11" class="empty">No sales logged this month yet.</td></tr>`;
+  if (periodSales.length===0){
+    html += `<tr><td colspan="11" class="empty">No sales logged in this period yet.</td></tr>`;
   } else {
-    monthSales.slice().reverse().forEach(s=>{
+    periodSales.slice().reverse().forEach(s=>{
       const paid = paidOf(s);
       const due = dueOf(s);
       html += `<tr>
@@ -584,41 +630,63 @@ async function deleteSale(id){
 }
 
 // ================= COLLECTION =================
-function blankColl(){ return { id:null, date:today(), customer:'', amount:'', mode:'Cash', note:'' }; }
+function blankColl(){ return { id:null, date:today(), customer:'', amount:'', gstAmount:'', mode:'Cash', note:'' }; }
 let collForm = blankColl();
 const MODES = ['Cash','Bank Transfer','Cheque','UPI'];
 
+// Running, cumulative-per-customer figures as of a given collection row's date.
+function computeCollectionLedgerRow(c){
+  const cumSalesValue = state.sales.filter(s => s.customer===c.customer && s.date <= c.date).reduce((a,s)=>a+(Number(s.saleValue)||0),0);
+  const cumGST = state.collections.filter(x => x.customer===c.customer && x.date <= c.date).reduce((a,x)=>a+(Number(x.gstAmount)||0),0);
+  const totalDue = cumSalesValue + cumGST;
+  const cumPayments = state.collections.filter(x => x.customer===c.customer && x.date <= c.date).reduce((a,x)=>a+(Number(x.amount)||0),0);
+  const balanceDue = totalDue - cumPayments;
+  return { cumSalesValue, cumGST, totalDue, cumPayments, balanceDue };
+}
+
 function renderCollectionTab(){
-  const monthColl = state.collections.filter(c=>c.month===state.month);
-  const total = monthColl.reduce((a,c)=>a+(Number(c.amount)||0),0);
-  const viaSales = monthColl.filter(c=>c.linkedSaleId).reduce((a,c)=>a+(Number(c.amount)||0),0);
+  const pb = resolvePeriod(collPeriod);
+  const periodColl = state.collections.filter(c=>c.date>=pb.from && c.date<=pb.to);
+  const total = periodColl.reduce((a,c)=>a+(Number(c.amount)||0),0);
+  const viaSales = periodColl.filter(c=>c.linkedSaleId).reduce((a,c)=>a+(Number(c.amount)||0),0);
   const direct = total - viaSales;
 
-  let html = `
+  let html = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+    <button class="btn emerald" onclick="downloadCollectionImage()">📷 Download as Image</button>
+    <button class="btn emerald" onclick="downloadCollectionPDF()">📄 Download as PDF</button>
+    <button class="btn emerald" onclick="downloadCollectionExcel()">⬇ Download Excel</button>
+  </div>`;
+
+  html += `<p class="section-title">Collections Report</p>`;
+  html += renderPeriodPicker(collPeriod, 'setCollPeriod');
+
+  html += `
     <div class="stat-row">
       <div class="stat emerald"><div class="lbl">Total Collected</div><div class="val">${fmtINR(total)}</div></div>
       <div class="stat amber"><div class="lbl">Via Sales</div><div class="val">${fmtINR(viaSales)}</div></div>
       <div class="stat stone"><div class="lbl">Direct</div><div class="val">${fmtINR(direct)}</div></div>
-      <div class="stat stone"><div class="lbl">Entries</div><div class="val">${monthColl.length}</div></div>
+      <div class="stat stone"><div class="lbl">Entries</div><div class="val">${periodColl.length}</div></div>
     </div>`;
 
   html += renderCollForm();
 
   html += `<div class="table-wrap"><table><thead><tr>
-    <th>Date</th><th>Customer</th><th>Mode</th><th>Source</th><th style="text-align:right;">Amount</th><th>Note</th><th></th>
+    <th>Date</th><th>Customer Name</th><th style="text-align:right;">Customer Sales Value</th><th style="text-align:right;">GST Amount</th>
+    <th style="text-align:right;">Total Due Payments</th><th style="text-align:right;">Customer Payments</th><th style="text-align:right;">Balance Due</th><th></th>
     </tr></thead><tbody>`;
-  if (monthColl.length===0){
-    html += `<tr><td colspan="7" class="empty">No collections logged this month yet.</td></tr>`;
+  if (periodColl.length===0){
+    html += `<tr><td colspan="8" class="empty">No collections logged in this period yet.</td></tr>`;
   } else {
-    monthColl.slice().reverse().forEach(c=>{
-      const linked = !!c.linkedSaleId;
+    periodColl.slice().reverse().forEach(c=>{
+      const ledger = computeCollectionLedgerRow(c);
       html += `<tr>
         <td>${esc(c.date)}</td>
         <td>${esc(c.customer)}</td>
-        <td>${esc(c.mode)}</td>
-        <td>${linked ? `<span class="badge amber">Sale — ${esc(c.linkedNote||'linked')}</span>` : `<span class="badge stone">Direct</span>`}</td>
-        <td class="num" style="color:var(--emerald);">${fmtINR(c.amount)}</td>
-        <td style="color:#78716c;font-size:12px;">${esc(c.note||'—')}</td>
+        <td class="num">${fmtINR(ledger.cumSalesValue)}</td>
+        <td class="num">${fmtINR(ledger.cumGST)}</td>
+        <td class="num">${fmtINR(ledger.totalDue)}</td>
+        <td class="num" style="color:var(--emerald);">${fmtINR(ledger.cumPayments)}</td>
+        <td class="num" style="color:${ledger.balanceDue>0?'var(--red)':'var(--emerald)'};">${fmtINR(ledger.balanceDue)}</td>
         <td><div class="actions">
           <button class="icon-btn" onclick="editColl('${c.id}')" title="Edit">✏️</button>
           ${state.role==='Admin' ? `<button class="icon-btn danger" onclick="deleteColl('${c.id}')" title="Delete">🗑️</button>` : ''}
@@ -627,7 +695,8 @@ function renderCollectionTab(){
     });
   }
   html += `</tbody></table></div>
-  <p class="hint">"Sale — ..." entries are linked to a specific sale — editing the amount here updates that sale's Paid/Due automatically, and vice versa. "Direct" entries are advances not yet tied to a sale.</p>`;
+  <p class="hint">Sales Value, GST, and Payments columns are running totals for that customer, as of each row's date — not just that single entry. Balance Due is their overall running balance at that point.</p>`;
+  html += renderCollectionCaptureBlock();
   document.getElementById('app').innerHTML = html;
   refreshDatalists();
 }
@@ -640,6 +709,7 @@ function renderCollForm(){
       <label><span class="lbl">Date</span><input type="date" value="${esc(f.date)}" onchange="collForm.date=this.value"></label>
       <label><span class="lbl">Customer</span><input list="customerList" value="${esc(f.customer)}" onchange="collForm.customer=this.value" placeholder="Customer name"></label>
       <label><span class="lbl">Amount (₹)</span><input type="number" step="any" value="${esc(f.amount)}" oninput="collForm.amount=this.value"></label>
+      <label><span class="lbl">GST Amount (₹, manual)</span><input type="number" step="any" value="${esc(f.gstAmount)}" oninput="collForm.gstAmount=this.value" placeholder="0"></label>
       <label><span class="lbl">Mode</span>
         <select onchange="collForm.mode=this.value">
           ${MODES.map(m=>`<option value="${m}" ${f.mode===m?'selected':''}>${m}</option>`).join('')}
@@ -654,7 +724,7 @@ function renderCollForm(){
 async function submitColl(){
   const f = collForm;
   if (!f.date || !f.customer || !f.amount || !f.mode){ alert('Please fill date, customer, amount and mode.'); return; }
-  const rec = { ...f, amount:Number(f.amount), month: monthOf(f.date) };
+  const rec = { ...f, amount:Number(f.amount), gstAmount:Number(f.gstAmount)||0, month: monthOf(f.date) };
   if (f.id){
     state.collections = state.collections.map(c => c.id===f.id ? { ...c, ...rec, editedBy: state.role } : c);
   } else {
@@ -684,6 +754,116 @@ async function deleteColl(id){
   renderCollectionTab();
 }
 
+function renderCollectionCaptureBlock(){
+  const AMBER='#b45309', TEAL='#0f766e', EMERALD='#047857', RED='#dc2626';
+  const pb = resolvePeriod(collPeriod);
+  const periodColl = state.collections.filter(c=>c.date>=pb.from && c.date<=pb.to);
+  const total = periodColl.reduce((a,c)=>a+(Number(c.amount)||0),0);
+  const viaSales = periodColl.filter(c=>c.linkedSaleId).reduce((a,c)=>a+(Number(c.amount)||0),0);
+  const direct = total - viaSales;
+  const todayStr = today();
+  const fmtDDMMYYYY = (dateStr) => { const [y,m,d] = dateStr.split('-'); return `${d}/${m}/${y}`; };
+
+  let inner = `<div style="background:linear-gradient(135deg,${EMERALD},#064e3b);border-radius:12px;padding:22px 24px;color:white;margin-bottom:20px;">
+    <h1 style="margin:0 0 18px;font-size:28px;font-weight:800;text-align:center;letter-spacing:0.5px;">Vinayaka Krupa Granites</h1>
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px;">
+      <div>
+        <div style="font-size:22px;font-weight:700;">Collections Report</div>
+        <p style="margin:4px 0 0;font-size:12px;opacity:0.9;">${esc(pb.from)} to ${esc(pb.to)}</p>
+      </div>
+      <div style="font-size:38px;font-weight:800;font-family:ui-monospace,monospace;letter-spacing:1px;line-height:1;">${esc(fmtDDMMYYYY(todayStr))}</div>
+    </div>
+  </div>`;
+
+  inner += `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+    ${dashKpi('Total Collected', fmtINR(total), EMERALD)}
+    ${dashKpi('Via Sales', fmtINR(viaSales), AMBER)}
+    ${dashKpi('Direct', fmtINR(direct), '#44403c')}
+    ${dashKpi('Entries', String(periodColl.length), TEAL)}
+  </div>`;
+
+  inner += dashHeader(`Collections — ${pb.from} to ${pb.to}`, EMERALD);
+  let rowsHtml = '';
+  if (periodColl.length===0){ rowsHtml = `<tr><td colspan="7" style="text-align:center;color:#a8a29e;padding:10px;">No collections in this period.</td></tr>`; }
+  else {
+    periodColl.slice().reverse().forEach((c,i)=>{
+      const ledger = computeCollectionLedgerRow(c);
+      rowsHtml += `<tr style="background:${i%2?'#fafaf9':'#fff'};">
+        <td style="padding:7px 10px;">${esc(c.date)}</td>
+        <td style="padding:7px 10px;">${esc(c.customer)}</td>
+        <td style="padding:7px 10px;text-align:right;">${fmtINR(ledger.cumSalesValue)}</td>
+        <td style="padding:7px 10px;text-align:right;">${fmtINR(ledger.cumGST)}</td>
+        <td style="padding:7px 10px;text-align:right;">${fmtINR(ledger.totalDue)}</td>
+        <td style="padding:7px 10px;text-align:right;color:${EMERALD};">${fmtINR(ledger.cumPayments)}</td>
+        <td style="padding:7px 10px;text-align:right;font-weight:600;color:${ledger.balanceDue>0?RED:EMERALD};">${fmtINR(ledger.balanceDue)}</td>
+      </tr>`;
+    });
+  }
+  inner += dashTable([{label:'Date'},{label:'Customer'},{label:'Sales Value',right:1},{label:'GST',right:1},{label:'Total Due',right:1},{label:'Payments',right:1},{label:'Balance',right:1}], rowsHtml, EMERALD);
+
+  return `<div id="collectionCaptureFull" style="position:absolute;left:-9999px;top:0;width:820px;background:#fafaf9;padding:24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1c1917;">${inner}</div>`;
+}
+
+async function downloadCollectionImage(){
+  if (typeof html2canvas === 'undefined'){ alert('Image export library did not load — check your internet connection and try again.'); return; }
+  const el = document.getElementById('collectionCaptureFull');
+  if (!el){ alert('Nothing to capture yet.'); return; }
+  try {
+    const canvas = await html2canvas(el, { backgroundColor: '#ffffff', scale: 2 });
+    const pb = resolvePeriod(collPeriod);
+    const link = document.createElement('a');
+    link.download = `VKG_Collections_${pb.from}_to_${pb.to}.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+    flash('Collections image downloaded');
+  } catch(e){ console.error(e); alert('Could not generate the image — please try again.'); }
+}
+async function downloadCollectionPDF(){
+  if (typeof html2canvas === 'undefined' || typeof window.jspdf === 'undefined'){ alert('PDF export library did not load — check your internet connection and try again.'); return; }
+  const el = document.getElementById('collectionCaptureFull');
+  if (!el){ alert('Nothing to capture yet.'); return; }
+  try {
+    const canvas = await html2canvas(el, { backgroundColor: '#ffffff', scale: 2 });
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF('p', 'pt', 'a4');
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const imgWidth = pageWidth;
+    const imgHeight = (canvas.height * imgWidth) / canvas.width;
+    const imgData = canvas.toDataURL('image/png');
+    let heightLeft = imgHeight, position = 0;
+    pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+    heightLeft -= pageHeight;
+    while (heightLeft > 0){
+      position = heightLeft - imgHeight;
+      pdf.addPage();
+      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+      heightLeft -= pageHeight;
+    }
+    const pb = resolvePeriod(collPeriod);
+    pdf.save(`VKG_Collections_${pb.from}_to_${pb.to}.pdf`);
+    flash('Collections PDF downloaded');
+  } catch(e){ console.error(e); alert('Could not generate the PDF — please try again.'); }
+}
+function downloadCollectionExcel(){
+  if (typeof XLSX === 'undefined'){ alert('Excel export library did not load — check your internet connection and try again.'); return; }
+  const pb = resolvePeriod(collPeriod);
+  const periodColl = state.collections.filter(c=>c.date>=pb.from && c.date<=pb.to);
+  const rows = periodColl.map(c=>{
+    const ledger = computeCollectionLedgerRow(c);
+    return {
+      'Date': c.date, 'Customer Name': c.customer, 'Customer Sales Value': ledger.cumSalesValue,
+      'GST Amount': ledger.cumGST, 'Total Due Payments': ledger.totalDue,
+      'Customer Payments': ledger.cumPayments, 'Balance Due': ledger.balanceDue,
+      'Mode': c.mode, 'Source': c.linkedSaleId ? `Sale — ${c.linkedNote||'linked'}` : 'Direct', 'Note': c.note||''
+    };
+  });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Collections');
+  XLSX.writeFile(wb, `VKG_Collections_${pb.from}_to_${pb.to}.xlsx`);
+  flash('Collections Excel downloaded');
+}
+
 // ================= MAIN RENDER =================
 function dashKpi(label, value, bg){
   return `<div style="flex:1;min-width:150px;background:${bg};border-radius:10px;padding:14px 16px;color:white;box-shadow:0 2px 6px rgba(0,0,0,0.12);">
@@ -707,8 +887,10 @@ function dashTable(headers, rowsHtml, headBg){
 
 function renderFullCaptureBlock(){
   const AMBER='#b45309', TEAL='#0f766e', EMERALD='#047857', RED='#dc2626', STONE='#44403c';
-  const monthSales = state.sales.filter(s=>s.month===state.month);
-  const monthColl = state.collections.filter(c=>c.month===state.month);
+  const monthSales = state.sales.filter(s=>s.month===state.month); // Target vs Achievement stays tied to the month picker
+  const pb = resolvePeriod(salesPeriod);
+  const periodSales = state.sales.filter(s=>s.date>=pb.from && s.date<=pb.to);
+  const periodColl = state.collections.filter(c=>c.date>=pb.from && c.date<=pb.to);
   const todayStr = today();
   const todaySales = state.sales.filter(s=>s.date===todayStr);
   const targetLines = targetLinesOf(state.month);
@@ -716,27 +898,31 @@ function renderFullCaptureBlock(){
   const targetRev = targetLines.reduce((a,l)=>a+(Number(l.volumeCBM)||0)*(Number(l.rate)||0),0);
   const achievedVol = monthSales.reduce((a,s)=>a+(Number(s.volumeCBM)||0),0);
   const achievedRev = monthSales.reduce((a,s)=>a+(Number(s.saleValue)||0),0);
-  const totalPaid = monthSales.reduce((a,s)=>a+paidOf(s),0);
-  const totalDue = achievedRev - totalPaid;
-  const totalColl = monthColl.reduce((a,c)=>a+(Number(c.amount)||0),0);
+  const periodValue = periodSales.reduce((a,s)=>a+(Number(s.saleValue)||0),0);
+  const periodPaid = periodSales.reduce((a,s)=>a+paidOf(s),0);
+  const periodDue = periodValue - periodPaid;
+  const totalColl = periodColl.reduce((a,c)=>a+(Number(c.amount)||0),0);
 
   const fmtDDMMYYYY = (dateStr) => { const [y,m,d] = dateStr.split('-'); return `${d}/${m}/${y}`; };
-  let inner = `<div style="background:linear-gradient(135deg,${AMBER},#7c2d12);border-radius:12px;padding:22px 24px;color:white;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px;">
-    <div>
-      <h1 style="margin:0 0 4px;font-size:20px;">VKG Sales &amp; Collections Summary</h1>
-      <p style="margin:0;font-size:12px;opacity:0.9;">${esc(state.month)} report</p>
+  let inner = `<div style="background:linear-gradient(135deg,${AMBER},#7c2d12);border-radius:12px;padding:22px 24px;color:white;margin-bottom:20px;">
+    <h1 style="margin:0 0 18px;font-size:28px;font-weight:800;text-align:center;letter-spacing:0.5px;">Vinayaka Krupa Granites</h1>
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px;">
+      <div>
+        <div style="font-size:22px;font-weight:700;">Sales &amp; Collection Summary</div>
+        <p style="margin:4px 0 0;font-size:12px;opacity:0.9;">${esc(pb.from)} to ${esc(pb.to)}</p>
+      </div>
+      <div style="font-size:38px;font-weight:800;font-family:ui-monospace,monospace;letter-spacing:1px;line-height:1;">${esc(fmtDDMMYYYY(todayStr))}</div>
     </div>
-    <div style="font-size:38px;font-weight:800;font-family:ui-monospace,monospace;letter-spacing:1px;line-height:1;">${esc(fmtDDMMYYYY(todayStr))}</div>
   </div>`;
 
   inner += `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
-    ${dashKpi('Sale Value', fmtINR(achievedRev), AMBER)}
-    ${dashKpi('Collected', fmtINR(totalPaid), EMERALD)}
-    ${dashKpi('Due', fmtINR(totalDue), totalDue>0?RED:EMERALD)}
+    ${dashKpi('Sale Value', fmtINR(periodValue), AMBER)}
+    ${dashKpi('Collected', fmtINR(periodPaid), EMERALD)}
+    ${dashKpi('Due', fmtINR(periodDue), periodDue>0?RED:EMERALD)}
     ${dashKpi('Total Collections', fmtINR(totalColl), TEAL)}
   </div>`;
 
-  inner += dashHeader('Target vs Achievement', TEAL);
+  inner += dashHeader('Target vs Achievement (Month Picker)', TEAL);
   inner += `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
     ${dashKpi('Target Volume', targetVol.toLocaleString('en-IN')+' CBM', TEAL)}
     ${dashKpi('Achieved Volume', achievedVol.toLocaleString('en-IN')+' CBM', AMBER)}
@@ -750,7 +936,7 @@ function renderFullCaptureBlock(){
 
   const salesTargetLines = targetLinesOf(state.month);
   const unplannedExport = computeUnplannedSales(monthSales, salesTargetLines);
-  inner += dashHeader('Sales Target vs Actually Sold — Mass-wise', AMBER);
+  inner += dashHeader('Sales Target vs Actually Sold — Mass-wise (Month Picker)', AMBER);
   let tRows = '';
   if (salesTargetLines.length===0 && unplannedExport.length===0){ tRows = `<tr><td colspan="7" style="text-align:center;color:#a8a29e;padding:10px;">No sales target lines set for this month.</td></tr>`; }
   else {
@@ -775,17 +961,13 @@ function renderFullCaptureBlock(){
   else { todaySales.forEach((s,i)=>{ todayRows += `<tr style="background:${i%2?'#fafaf9':'#fff'};"><td style="padding:7px 10px;">${esc(s.customer)}</td><td style="padding:7px 10px;">${esc(s.itemType)}</td><td style="padding:7px 10px;text-align:right;">${s.volumeCBM}</td><td style="padding:7px 10px;text-align:right;">${fmtINR(s.saleValue)}</td><td style="padding:7px 10px;text-align:right;color:${EMERALD};">${fmtINR(paidOf(s))}</td></tr>`; }); }
   inner += dashTable([{label:'Customer'},{label:'Item'},{label:'Vol',right:1},{label:'Value',right:1},{label:'Paid',right:1}], todayRows, TEAL);
 
-  inner += dashHeader(`Confirmed Sales — Full Month (${monthSales.length})`, AMBER);
+  inner += dashHeader(`Confirmed Sales — ${pb.from} to ${pb.to} (${periodSales.length})`, AMBER);
   let salesRowsHtml = '';
-  if (monthSales.length===0){ salesRowsHtml = `<tr><td colspan="7" style="text-align:center;color:#a8a29e;padding:10px;">No sales this month.</td></tr>`; }
-  else { monthSales.forEach((s,i)=>{ const paid=paidOf(s); const due=dueOf(s); salesRowsHtml += `<tr style="background:${i%2?'#fafaf9':'#fff'};"><td style="padding:7px 10px;">${esc(s.date)}</td><td style="padding:7px 10px;">${esc(s.customer)}</td><td style="padding:7px 10px;">${esc(s.itemType)}</td><td style="padding:7px 10px;text-align:right;">${s.volumeCBM}</td><td style="padding:7px 10px;text-align:right;">${fmtINR(s.saleValue)}</td><td style="padding:7px 10px;text-align:right;color:${EMERALD};">${fmtINR(paid)}</td><td style="padding:7px 10px;text-align:right;font-weight:600;color:${due>0?RED:EMERALD};">${fmtINR(due)}</td></tr>`; }); }
+  if (periodSales.length===0){ salesRowsHtml = `<tr><td colspan="7" style="text-align:center;color:#a8a29e;padding:10px;">No sales in this period.</td></tr>`; }
+  else { periodSales.forEach((s,i)=>{ const paid=paidOf(s); const due=dueOf(s); salesRowsHtml += `<tr style="background:${i%2?'#fafaf9':'#fff'};"><td style="padding:7px 10px;">${esc(s.date)}</td><td style="padding:7px 10px;">${esc(s.customer)}</td><td style="padding:7px 10px;">${esc(s.itemType)}</td><td style="padding:7px 10px;text-align:right;">${s.volumeCBM}</td><td style="padding:7px 10px;text-align:right;">${fmtINR(s.saleValue)}</td><td style="padding:7px 10px;text-align:right;color:${EMERALD};">${fmtINR(paid)}</td><td style="padding:7px 10px;text-align:right;font-weight:600;color:${due>0?RED:EMERALD};">${fmtINR(due)}</td></tr>`; }); }
   inner += dashTable([{label:'Date'},{label:'Customer'},{label:'Item'},{label:'Vol',right:1},{label:'Value',right:1},{label:'Paid',right:1},{label:'Due',right:1}], salesRowsHtml, AMBER);
 
-  inner += dashHeader(`Collections — Full Month (Total: ${fmtINR(totalColl)})`, EMERALD);
-  let collRowsHtml = '';
-  if (monthColl.length===0){ collRowsHtml = `<tr><td colspan="5" style="text-align:center;color:#a8a29e;padding:10px;">No collections this month.</td></tr>`; }
-  else { monthColl.forEach((c,i)=>{ collRowsHtml += `<tr style="background:${i%2?'#fafaf9':'#fff'};"><td style="padding:7px 10px;">${esc(c.date)}</td><td style="padding:7px 10px;">${esc(c.customer)}</td><td style="padding:7px 10px;">${esc(c.mode)}</td><td style="padding:7px 10px;">${c.linkedSaleId?('Sale — '+esc(c.linkedNote||'linked')):'Direct'}</td><td style="padding:7px 10px;text-align:right;color:${EMERALD};">${fmtINR(c.amount)}</td></tr>`; }); }
-  inner += dashTable([{label:'Date'},{label:'Customer'},{label:'Mode'},{label:'Source'},{label:'Amount',right:1}], collRowsHtml, EMERALD);
+
 
   return `<div id="summaryCaptureFull" style="position:absolute;left:-9999px;top:0;width:820px;background:#fafaf9;padding:24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1c1917;">${inner}</div>`;
 }
@@ -797,7 +979,7 @@ async function downloadSummaryImage(){
   try {
     const canvas = await html2canvas(el, { backgroundColor: '#ffffff', scale: 2 });
     const link = document.createElement('a');
-    link.download = `VKG_Sales_Summary_${state.month}.png`;
+    link.download = `VKG_Sales_Summary_${resolvePeriod(salesPeriod).from}_to_${resolvePeriod(salesPeriod).to}.png`;
     link.href = canvas.toDataURL('image/png');
     link.click();
     flash('Summary image downloaded');
@@ -828,15 +1010,16 @@ async function downloadSummaryPDF(){
       pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
       heightLeft -= pageHeight;
     }
-    pdf.save(`VKG_Sales_Summary_${state.month}.pdf`);
+    pdf.save(`VKG_Sales_Summary_${resolvePeriod(salesPeriod).from}_to_${resolvePeriod(salesPeriod).to}.pdf`);
     flash('Summary PDF downloaded');
   } catch(e){ console.error(e); alert('Could not generate the PDF — please try again.'); }
 }
 
 function downloadExcel(){
   if (typeof XLSX === 'undefined'){ alert('Excel export library did not load — check your internet connection and try again.'); return; }
-  const monthSales = state.sales.filter(s=>s.month===state.month);
-  const monthColl = state.collections.filter(c=>c.month===state.month);
+  const pb = resolvePeriod(salesPeriod);
+  const monthSales = state.sales.filter(s=>s.date>=pb.from && s.date<=pb.to);
+  const monthColl = state.collections.filter(c=>c.date>=pb.from && c.date<=pb.to);
 
   const salesRows = monthSales.map(s=>{
     const paid = paidOf(s);
@@ -846,7 +1029,6 @@ function downloadExcel(){
       'Volume (CBM)': s.volumeCBM, 'Rate': s.rate, 'Sale Value': s.saleValue, 'Paid': paid, 'Due': due, 'Note': s.note||''
     };
   });
-  const collRows = monthColl.map(c=>({ 'Date': c.date, 'Customer': c.customer, 'Mode': c.mode, 'Source': c.linkedSaleId ? `Sale — ${c.linkedNote||'linked'}` : 'Direct', 'Amount': c.amount, 'Note': c.note||'' }));
   const salesTargetRows = targetLinesOf(state.month).map(l=>{
     const targetRevLine = (Number(l.volumeCBM)||0)*(Number(l.rate)||0);
     const matched = monthSales.filter(s=>s.massId===l.massId);
@@ -878,21 +1060,143 @@ function downloadExcel(){
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(salesRows), 'Sales');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(collRows), 'Collections');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(salesTargetRows), 'Sales Target (Mass-wise)');
-  XLSX.writeFile(wb, `VKG_Sales_${state.month}.xlsx`);
+  XLSX.writeFile(wb, `VKG_Sales_${pb.from}_to_${pb.to}.xlsx`);
   flash('Excel downloaded');
+}
+
+function renderCustomerSummaryTab(){
+  const byCustomer = {};
+  state.sales.forEach(s=>{
+    const c = s.customer || '(no customer)';
+    if (!byCustomer[c]) byCustomer[c] = { customer:c, vol:0, salesValue:0, collected:0 };
+    byCustomer[c].vol += Number(s.volumeCBM)||0;
+    byCustomer[c].salesValue += Number(s.saleValue)||0;
+  });
+  state.collections.forEach(c=>{
+    const name = c.customer || '(no customer)';
+    if (!byCustomer[name]) byCustomer[name] = { customer:name, vol:0, salesValue:0, collected:0 };
+    byCustomer[name].collected += Number(c.amount)||0;
+  });
+  const rows = Object.values(byCustomer).sort((a,b)=>b.salesValue-a.salesValue);
+  const totalVol = rows.reduce((a,r)=>a+r.vol,0);
+  const totalSales = rows.reduce((a,r)=>a+r.salesValue,0);
+  const totalColl = rows.reduce((a,r)=>a+r.collected,0);
+
+  let html = `
+    <p class="section-title">Customer Summary — All Time (first recorded month through today)</p>
+    <div class="stat-row">
+      <div class="stat amber"><div class="lbl">Total Volume</div><div class="val">${totalVol.toLocaleString('en-IN')} CBM</div></div>
+      <div class="stat teal"><div class="lbl">Total Sales Value</div><div class="val">${fmtINRCr(totalSales)}</div></div>
+      <div class="stat emerald"><div class="lbl">Total Collections</div><div class="val">${fmtINRCr(totalColl)}</div></div>
+    </div>
+    <div class="table-wrap"><table><thead><tr>
+      <th>Customer Name</th><th style="text-align:right;">Total Volume (CBM)</th><th style="text-align:right;">Total Sales Value</th><th style="text-align:right;">Total Collections</th>
+    </tr></thead><tbody>`;
+  if (rows.length===0){
+    html += `<tr><td colspan="4" class="empty">No customers recorded yet.</td></tr>`;
+  } else {
+    rows.forEach(r=>{
+      html += `<tr>
+        <td>${esc(r.customer)}</td>
+        <td class="num">${r.vol.toLocaleString('en-IN')}</td>
+        <td class="num">${fmtINR(r.salesValue)}</td>
+        <td class="num" style="color:var(--emerald);">${fmtINR(r.collected)}</td>
+      </tr>`;
+    });
+  }
+  html += `</tbody></table></div>
+  <p class="hint">This customer table always reflects every month you've ever recorded — it ignores the month picker above.</p>`;
+
+  const byMonth = {};
+  state.sales.forEach(s=>{
+    const m = s.month || monthOf(s.date);
+    if (!byMonth[m]) byMonth[m] = { month:m, vol:0, salesValue:0, collected:0 };
+    byMonth[m].vol += Number(s.volumeCBM)||0;
+    byMonth[m].salesValue += Number(s.saleValue)||0;
+  });
+  state.collections.forEach(c=>{
+    const m = c.month || monthOf(c.date);
+    if (!byMonth[m]) byMonth[m] = { month:m, vol:0, salesValue:0, collected:0 };
+    byMonth[m].collected += Number(c.amount)||0;
+  });
+  const monthRows = Object.values(byMonth).sort((a,b)=>a.month.localeCompare(b.month));
+
+  html += `<p class="section-title" style="margin-top:24px;">Month-wise Breakdown</p>
+    <div class="table-wrap"><table><thead><tr>
+      <th>Month</th><th style="text-align:right;">Volume (CBM)</th><th style="text-align:right;">Sales Value</th><th style="text-align:right;">Collections</th>
+    </tr></thead><tbody>`;
+  if (monthRows.length===0){
+    html += `<tr><td colspan="4" class="empty">No data recorded yet.</td></tr>`;
+  } else {
+    monthRows.forEach(r=>{
+      html += `<tr>
+        <td>${esc(r.month)}</td>
+        <td class="num">${r.vol.toLocaleString('en-IN')}</td>
+        <td class="num">${fmtINR(r.salesValue)}</td>
+        <td class="num" style="color:var(--emerald);">${fmtINR(r.collected)}</td>
+      </tr>`;
+    });
+  }
+  html += `</tbody></table></div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
+    <button class="btn teal" onclick="downloadCustomerSummaryExcel()">⬇ Download Excel</button>
+  </div>`;
+  document.getElementById('app').innerHTML = html;
+  refreshDatalists();
+}
+
+function downloadCustomerSummaryExcel(){
+  if (typeof XLSX === 'undefined'){ alert('Excel export library did not load — check your internet connection and try again.'); return; }
+  const byCustomer = {};
+  state.sales.forEach(s=>{
+    const c = s.customer || '(no customer)';
+    if (!byCustomer[c]) byCustomer[c] = { customer:c, vol:0, salesValue:0, collected:0 };
+    byCustomer[c].vol += Number(s.volumeCBM)||0;
+    byCustomer[c].salesValue += Number(s.saleValue)||0;
+  });
+  state.collections.forEach(c=>{
+    const name = c.customer || '(no customer)';
+    if (!byCustomer[name]) byCustomer[name] = { customer:name, vol:0, salesValue:0, collected:0 };
+    byCustomer[name].collected += Number(c.amount)||0;
+  });
+  const customerRows = Object.values(byCustomer).sort((a,b)=>b.salesValue-a.salesValue).map(r=>({
+    'Customer Name': r.customer, 'Total Volume (CBM)': r.vol, 'Total Sales Value': r.salesValue, 'Total Collections': r.collected
+  }));
+
+  const byMonth = {};
+  state.sales.forEach(s=>{
+    const m = s.month || monthOf(s.date);
+    if (!byMonth[m]) byMonth[m] = { month:m, vol:0, salesValue:0, collected:0 };
+    byMonth[m].vol += Number(s.volumeCBM)||0;
+    byMonth[m].salesValue += Number(s.saleValue)||0;
+  });
+  state.collections.forEach(c=>{
+    const m = c.month || monthOf(c.date);
+    if (!byMonth[m]) byMonth[m] = { month:m, vol:0, salesValue:0, collected:0 };
+    byMonth[m].collected += Number(c.amount)||0;
+  });
+  const monthRows = Object.values(byMonth).sort((a,b)=>a.month.localeCompare(b.month)).map(r=>({
+    'Month': r.month, 'Volume (CBM)': r.vol, 'Sales Value': r.salesValue, 'Collections': r.collected
+  }));
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(customerRows), 'Customer-wise');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(monthRows), 'Month-wise');
+  XLSX.writeFile(wb, `VKG_Customer_Summary_${today()}.xlsx`);
+  flash('Customer summary Excel downloaded');
 }
 
 function render(){
   if (state.loading){ document.getElementById('app').innerHTML = '<div class="empty">Loading…</div>'; return; }
-  ['sales','collection'].forEach(t=>{
+  ['sales','collection','summary'].forEach(t=>{
     document.getElementById('tabBtn-'+t).classList.toggle('active', state.tab===t);
   });
   document.getElementById('roleSelect').value = state.role;
   targetLineDraft = null;
   if (state.tab==='sales') renderSalesTab();
-  else renderCollectionTab();
+  else if (state.tab==='collection') renderCollectionTab();
+  else renderCustomerSummaryTab();
 }
 </script>
 </body>
