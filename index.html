@@ -117,19 +117,108 @@ const KEYS = { MASTER:'lite-sales-master', SALES:'lite-sales-sales', COLLECTION:
 // ---- Supabase connection (same project as the Production app — different key names, no clash) ----
 const SUPABASE_URL = 'https://kfalpjblwfhlcqmxbwkc.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_LtkaUUlFOJ1DYCq4J1jXSA_63dmARUe';
+if (typeof window.supabase === 'undefined'){
+  document.body.innerHTML = '<div style="padding:24px;color:red;font-family:sans-serif;">ERROR: The Supabase library did not load. Check your internet connection and reload the page.</div>';
+  throw new Error('Supabase library missing');
+}
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 async function loadKey(key, fallback){
   try {
-    const { data, error } = await sb.from('app_storage').select('value').eq('key', key).maybeSingle();
-    if (error) throw error;
-    return data ? data.value : fallback;
+    if (key === PRODUCTION_MASSTARGETS_KEY){
+      const { data, error } = await sb.from('production_mass_targets').select('*').order('month');
+      if (error) throw error;
+      return data.map(t => ({
+        id: t.id, month: t.month, massId: t.mass_id, pitId: t.pit_id || '',
+        managerName: t.manager_name || '', volumeCBM: t.volume_cbm ?? '', customerName: t.customer_name || ''
+      }));
+    }
+    if (key === KEYS.MASTER){
+      const { data, error } = await sb.from('sales_masters').select('type,value');
+      if (error) throw error;
+      return {
+        customers: data.filter(r=>r.type==='customer').map(r=>r.value),
+        massIds: data.filter(r=>r.type==='mass_id').map(r=>r.value)
+      };
+    }
+    if (key === KEYS.SALES){
+      const { data, error } = await sb.from('sales_entries').select('*').order('sale_date');
+      if (error) throw error;
+      return data.map(s => ({
+        id: s.id, date: s.sale_date, salesType: s.sales_type || 'Local', customer: s.customer || '',
+        itemType: s.item_type || 'Full Mass', massId: s.mass_id || '', volumeCBM: s.volume_cbm ?? '',
+        rate: s.rate ?? '', paymentReceived: '', note: s.note || ''
+      }));
+    }
+    if (key === KEYS.COLLECTION){
+      const { data, error } = await sb.from('sales_collections').select('*').order('coll_date');
+      if (error) throw error;
+      return data.map(c => ({
+        id: c.id, date: c.coll_date, customer: c.customer || '', massId: c.mass_id || '',
+        amount: c.amount ?? '', gstAmount: c.gst_amount ?? '', mode: c.payment_mode || 'Cash', note: c.note || ''
+      }));
+    }
+    if (key === KEYS.TARGET){
+      const { data: targets, error } = await sb.from('sales_targets').select('*').order('month');
+      if (error) throw error;
+      const { data: lines, error: lErr } = await sb.from('sales_target_lines').select('*');
+      if (lErr) throw lErr;
+      return targets.map(t => ({
+        id: t.id, month: t.month,
+        lines: lines.filter(l=>l.target_id===t.id).map(l=>({ id: l.id, massId: l.mass_id, volumeCBM: l.volume_cbm ?? '', rate: l.rate ?? '' }))
+      }));
+    }
+    return fallback;
   } catch(e){ console.error('load failed', key, e); return fallback; }
 }
+
 async function saveKey(key, value){
   try {
-    const { error } = await sb.from('app_storage').upsert({ key, value, updated_at: new Date().toISOString() });
-    if (error) throw error;
+    if (key === KEYS.MASTER){
+      const { data: existing } = await sb.from('sales_masters').select('type,value');
+      const existingSet = new Set((existing||[]).map(r=>r.type+':'+r.value));
+      const toInsert = [];
+      (value.customers||[]).forEach(v=>{ if(!existingSet.has('customer:'+v)) toInsert.push({type:'customer', value:v}); });
+      (value.massIds||[]).forEach(v=>{ if(!existingSet.has('mass_id:'+v)) toInsert.push({type:'mass_id', value:v}); });
+      if (toInsert.length){ const { error } = await sb.from('sales_masters').insert(toInsert); if (error) throw error; }
+    } else if (key === KEYS.SALES){
+      const { error: delErr } = await sb.from('sales_entries').delete().not('id','is',null);
+      if (delErr) throw delErr;
+      if (value.length){
+        const rows = value.map(s=>({
+          sale_date: s.date, sales_type: s.salesType||null, customer: s.customer||null, item_type: s.itemType||null,
+          mass_id: s.massId||null, volume_cbm: s.volumeCBM||null, rate: s.rate||null, note: s.note||null
+        }));
+        const { data: inserted, error } = await sb.from('sales_entries').insert(rows).select();
+        if (error) throw error;
+        inserted.forEach((row,i)=>{ value[i].id = row.id; });
+      }
+    } else if (key === KEYS.COLLECTION){
+      const { error: delErr } = await sb.from('sales_collections').delete().not('id','is',null);
+      if (delErr) throw delErr;
+      if (value.length){
+        const rows = value.map(c=>({
+          coll_date: c.date, customer: c.customer||null, mass_id: c.massId || 'Unspecified',
+          amount: c.amount||0, gst_amount: c.gstAmount||null, payment_mode: c.mode||null, note: c.note||null
+        }));
+        const { data: inserted, error } = await sb.from('sales_collections').insert(rows).select();
+        if (error) throw error;
+        inserted.forEach((row,i)=>{ value[i].id = row.id; });
+      }
+    } else if (key === KEYS.TARGET){
+      const { error: delErr } = await sb.from('sales_targets').delete().not('id','is',null);
+      if (delErr) throw delErr;
+      for (const t of value){
+        const { data: inserted, error } = await sb.from('sales_targets').insert({ month: t.month }).select().single();
+        if (error) throw error;
+        t.id = inserted.id;
+        if (t.lines && t.lines.length){
+          const lineRows = t.lines.map(l=>({ target_id: inserted.id, mass_id: l.massId, volume_cbm: l.volumeCBM||null, rate: l.rate||null }));
+          const { error: lErr } = await sb.from('sales_target_lines').insert(lineRows);
+          if (lErr) throw lErr;
+        }
+      }
+    }
     return true;
   } catch(e){ console.error('save failed', key, e); return false; }
 }
@@ -367,4 +456,888 @@ function computeUnplannedSales(monthSales, lines){
   monthSales.filter(s=>!targetedMassIds.has(s.massId)).forEach(s=>{
     const key = s.massId || '(no Mass ID)';
     if (!groups[key]) groups[key] = { massId: key, vol:0, rev:0 };
-  
+    groups[key].vol += Number(s.volumeCBM)||0;
+    groups[key].rev += Number(s.saleValue)||0;
+  });
+  return Object.values(groups);
+}
+
+function renderTargetCard(monthSales){
+  const lines = targetLinesOf(state.month);
+  const targetVol = lines.reduce((a,l)=>a+(Number(l.volumeCBM)||0),0);
+  const targetRev = lines.reduce((a,l)=>a+(Number(l.volumeCBM)||0)*(Number(l.rate)||0),0);
+  const achievedVol = monthSales.reduce((a,s)=>a+(Number(s.volumeCBM)||0),0);
+  const achievedRev = monthSales.reduce((a,s)=>a+(Number(s.saleValue)||0),0);
+  const balVol = Math.max(targetVol - achievedVol, 0);
+  const balRev = Math.max(targetRev - achievedRev, 0);
+
+  let html = `
+  <div class="card">
+    <p class="section-title">Sales Target — Mass-wise</p>
+    <div class="stat-row" style="margin-bottom:12px;">
+      <div class="stat teal"><div class="lbl">Target Volume</div><div class="val">${targetVol.toLocaleString('en-IN')} CBM</div></div>
+      <div class="stat amber"><div class="lbl">Achieved Volume</div><div class="val">${achievedVol.toLocaleString('en-IN')} CBM</div></div>
+      <div class="stat ${balVol>0?'red':'emerald'}"><div class="lbl">Balance Volume</div><div class="val">${balVol.toLocaleString('en-IN')} CBM</div></div>
+      <div class="stat stone"><div class="lbl">&nbsp;</div><div class="val">&nbsp;</div></div>
+      <div class="stat teal"><div class="lbl">Target Revenue</div><div class="val">${fmtINRCr(targetRev)}</div></div>
+      <div class="stat amber"><div class="lbl">Achieved Revenue</div><div class="val">${fmtINRCr(achievedRev)}</div></div>
+      <div class="stat ${balRev>0?'red':'emerald'}"><div class="lbl">Balance Revenue</div><div class="val">${fmtINRCr(balRev)}</div></div>
+      <div class="stat stone"><div class="lbl">&nbsp;</div><div class="val">&nbsp;</div></div>
+    </div>`;
+
+  if (targetLineDraft){
+    html += renderTargetLineForm();
+  } else {
+    html += `<button class="btn amber" onclick="openTargetLineForm(null)" style="margin-bottom:12px;">+ Add target line</button>`;
+  }
+
+  html += `<div class="table-wrap"><table><thead><tr>
+    <th>Mass ID</th><th style="text-align:right;">Target Vol</th><th style="text-align:right;">Rate</th><th style="text-align:right;">Target Rev</th>
+    <th style="text-align:right;">Sold Vol</th><th style="text-align:right;">Sold Rev</th><th style="text-align:right;">Vol Balance</th><th style="text-align:right;">Rev Balance</th><th></th>
+    </tr></thead><tbody>`;
+  const unplanned = computeUnplannedSales(monthSales, lines);
+  if (lines.length===0 && unplanned.length===0){
+    html += `<tr><td colspan="9" class="empty">No masses targeted for sales yet this month.</td></tr>`;
+  } else {
+    lines.forEach(l=>{
+      const targetRevLine = (Number(l.volumeCBM)||0)*(Number(l.rate)||0);
+      const matchedSales = monthSales.filter(s=>s.massId===l.massId);
+      const sold = matchedSales.reduce((a,s)=>a+(Number(s.volumeCBM)||0),0);
+      const soldRev = matchedSales.reduce((a,s)=>a+(Number(s.saleValue)||0),0);
+      const bal = (Number(l.volumeCBM)||0) - sold;
+      const revBal = targetRevLine - soldRev;
+      html += `<tr>
+        <td style="font-family:ui-monospace,monospace;">${esc(l.massId)}</td>
+        <td class="num">${l.volumeCBM}</td>
+        <td class="num">₹${Number(l.rate).toLocaleString('en-IN')}</td>
+        <td class="num">${fmtINRCr(targetRevLine)}</td>
+        <td class="num">${sold.toLocaleString('en-IN')}</td>
+        <td class="num" style="color:var(--emerald);">${fmtINRCr(soldRev)}</td>
+        <td class="num" style="color:${bal>0?'var(--red)':'var(--emerald)'};">${bal.toLocaleString('en-IN')}</td>
+        <td class="num" style="color:${revBal>0?'var(--red)':'var(--emerald)'};">${fmtINRCr(revBal)}</td>
+        <td><div class="actions">
+          <button class="icon-btn" onclick="openTargetLineForm('${l.id}')" title="Edit">✏️</button>
+          ${state.role==='Admin' ? `<button class="icon-btn danger" onclick="deleteTargetLine('${l.id}')" title="Delete">🗑️</button>` : ''}
+        </div></td>
+      </tr>`;
+    });
+    if (lines.length>0){
+      const sumTargetVol = lines.reduce((a,l)=>a+(Number(l.volumeCBM)||0),0);
+      const sumTargetRev = lines.reduce((a,l)=>a+(Number(l.volumeCBM)||0)*(Number(l.rate)||0),0);
+      const sumSoldVol = lines.reduce((a,l)=>a+monthSales.filter(s=>s.massId===l.massId).reduce((x,s)=>x+(Number(s.volumeCBM)||0),0),0);
+      const sumSoldRev = lines.reduce((a,l)=>a+monthSales.filter(s=>s.massId===l.massId).reduce((x,s)=>x+(Number(s.saleValue)||0),0),0);
+      const sumVolBal = sumTargetVol - sumSoldVol;
+      const sumRevBal = sumTargetRev - sumSoldRev;
+      html += `<tr style="background:var(--stone-bg);font-weight:700;border-top:2px solid var(--stone-border);">
+        <td colspan="1">TOTAL</td>
+        <td class="num">${sumTargetVol.toLocaleString('en-IN')}</td>
+        <td></td>
+        <td class="num">${fmtINRCr(sumTargetRev)}</td>
+        <td class="num">${sumSoldVol.toLocaleString('en-IN')}</td>
+        <td class="num" style="color:var(--emerald);">${fmtINRCr(sumSoldRev)}</td>
+        <td class="num" style="color:${sumVolBal>0?'var(--red)':'var(--emerald)'};">${sumVolBal.toLocaleString('en-IN')}</td>
+        <td class="num" style="color:${sumRevBal>0?'var(--red)':'var(--emerald)'};">${fmtINRCr(sumRevBal)}</td>
+        <td></td>
+      </tr>`;
+    }
+    unplanned.forEach(u=>{
+      html += `<tr style="background:#fffbeb;">
+        <td style="font-family:ui-monospace,monospace;">${esc(u.massId)} <span class="badge amber" style="margin-left:4px;">Unplanned</span></td>
+        <td class="num" style="color:#a8a29e;">—</td>
+        <td class="num" style="color:#a8a29e;">—</td>
+        <td class="num" style="color:#a8a29e;">—</td>
+        <td class="num">${u.vol.toLocaleString('en-IN')}</td>
+        <td class="num" style="color:var(--emerald);">${fmtINRCr(u.rev)}</td>
+        <td class="num" style="color:#a8a29e;">—</td>
+        <td class="num" style="color:#a8a29e;">—</td>
+        <td></td>
+      </tr>`;
+    });
+  }
+  html += `</tbody></table></div>`;
+  if (unplanned.length > 0){
+    html += `<p class="hint">"Unplanned" rows are sales for a Mass ID that has no target line set up — nothing here is ever silently uncounted; add a target line for that Mass ID if you want it tracked against a plan.</p>`;
+  }
+
+  html += `<button class="btn ghost" onclick="toggleProdMasses()" style="margin-top:12px;">${showProdMasses ? 'Hide' : '🏭 Show'} Targeted Masses (Production) — ${esc(state.month)}</button>
+    ${showProdMasses ? renderProdMassesPanel() : ''}
+  </div>`;
+  return html;
+}
+function renderProdMassesPanel(){
+  const masses = state.productionMassTargets.filter(t=>t.month===state.month);
+  const totalVol = masses.reduce((a,t)=>a+(Number(t.volumeCBM)||0),0);
+  let html = `<div class="subcard" style="margin-top:12px;">
+    <div class="subtitle">Masses targeted for production this month — read-only, pulled from the Production app</div>`;
+  html += `<div class="table-wrap"><table><thead><tr><th>Mass ID</th><th>Pit</th><th>Manager</th><th style="text-align:right;">Expected Volume (CBM)</th></tr></thead><tbody>`;
+  if (masses.length===0){
+    html += `<tr><td colspan="4" class="empty">No masses targeted in Production for this month yet.</td></tr>`;
+  } else {
+    masses.forEach(t=>{
+      html += `<tr><td style="font-family:ui-monospace,monospace;">${esc(t.massId)}</td><td>${esc(t.pitId||'—')}</td><td>${esc(t.managerName||'—')}</td><td class="num">${esc(t.volumeCBM||'—')}</td></tr>`;
+    });
+  }
+  html += `</tbody></table></div>
+  <p class="hint">Total expected volume: ${totalVol.toLocaleString('en-IN')} CBM. This is a snapshot from when you last opened/refreshed this panel — tap "Hide" then "Show" again to pull the latest from Production.</p>
+  </div>`;
+  return html;
+}
+
+// ================= SALES =================
+function blankSale(){ return { id:null, date:today(), salesType:'Local', customer:'', itemType:'Full Mass', massId:'', volumeCBM:'', rate:LOCAL_RATE, paymentReceived:'', note:'' }; }
+let saleForm = blankSale();
+
+function renderSalesTab(){
+  const monthSales = state.sales.filter(s=>s.month===state.month); // still drives the Sales Target card, tied to the month picker
+  const periodBounds = resolvePeriod(salesPeriod);
+  const periodSales = state.sales.filter(s=>s.date>=periodBounds.from && s.date<=periodBounds.to); // drives the report table + downloads
+  const totalVol = periodSales.reduce((a,s)=>a+(Number(s.volumeCBM)||0),0);
+  const totalValue = periodSales.reduce((a,s)=>a+(Number(s.saleValue)||0),0);
+  const totalPaid = periodSales.reduce((a,s)=>a+paidOf(s),0);
+  const totalDue = totalValue - totalPaid;
+
+  let html = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+    <button class="btn amber" onclick="downloadSummaryImage()">📷 Download as Image</button>
+    <button class="btn amber" onclick="downloadSummaryPDF()">📄 Download as PDF</button>
+    <button class="btn amber" onclick="downloadExcel()">⬇ Download Excel</button>
+  </div>`;
+
+  html += renderTargetCard(monthSales);
+
+  html += `<p class="section-title">Confirmed Sales Report</p>`;
+  html += renderPeriodPicker(salesPeriod, 'setSalesPeriod');
+
+  html += `
+    <div class="stat-row">
+      <div class="stat stone"><div class="lbl">Sales in period</div><div class="val">${periodSales.length}</div></div>
+      <div class="stat teal"><div class="lbl">Volume</div><div class="val">${totalVol.toLocaleString('en-IN')} CBM</div></div>
+      <div class="stat amber"><div class="lbl">Sale Value</div><div class="val">${fmtINR(totalValue)}</div></div>
+      <div class="stat emerald"><div class="lbl">Collected</div><div class="val">${fmtINR(totalPaid)}</div></div>
+      <div class="stat red"><div class="lbl">Due</div><div class="val">${fmtINR(totalDue)}</div></div>
+    </div>`;
+
+  html += renderSaleForm();
+
+  html += `<div class="table-wrap"><table><thead><tr>
+    <th>Date</th><th>Type</th><th>Customer</th><th>Mass ID</th><th>Item</th>
+    <th style="text-align:right;">Vol</th><th style="text-align:right;">Rate</th><th style="text-align:right;">Value</th>
+    <th style="text-align:right;">Paid</th><th style="text-align:right;">Due</th><th></th>
+    </tr></thead><tbody>`;
+  if (periodSales.length===0){
+    html += `<tr><td colspan="11" class="empty">No sales logged in this period yet.</td></tr>`;
+  } else {
+    periodSales.slice().reverse().forEach(s=>{
+      const paid = paidOf(s);
+      const due = dueOf(s);
+      html += `<tr>
+        <td>${esc(s.date)}</td>
+        <td><span class="badge ${s.salesType==='Export'?'teal':'stone'}">${esc(s.salesType)}</span></td>
+        <td>${esc(s.customer)}</td>
+        <td style="font-family:ui-monospace,monospace;">${esc(s.massId||'—')}</td>
+        <td><span class="badge stone">${esc(s.itemType)}</span>${s.note?` <span class="hint">(${esc(s.note)})</span>`:''}</td>
+        <td class="num">${s.volumeCBM}</td>
+        <td class="num">₹${Number(s.rate).toLocaleString('en-IN')}</td>
+        <td class="num">${fmtINR(s.saleValue)}</td>
+        <td class="num" style="color:var(--emerald);">${fmtINR(paid)}</td>
+        <td class="num" style="color:${due>0?'var(--red)':'var(--emerald)'};">${fmtINR(due)}</td>
+        <td><div class="actions">
+          <button class="icon-btn" onclick="editSale('${s.id}')" title="Edit">✏️</button>
+          ${state.role==='Admin' ? `<button class="icon-btn danger" onclick="deleteSale('${s.id}')" title="Delete">🗑️</button>` : ''}
+        </div></td>
+      </tr>`;
+    });
+  }
+  html += `</tbody></table></div>`;
+  html += renderFullCaptureBlock();
+  document.getElementById('app').innerHTML = html;
+  refreshDatalists();
+}
+
+function renderSaleForm(){
+  const f = saleForm;
+  const saleValue = (Number(f.volumeCBM)||0) * (Number(f.rate)||0);
+  const due = saleValue - (Number(f.paymentReceived)||0);
+  return `
+  <div class="card">
+    <div class="grid">
+      <label><span class="lbl">Date</span><input type="date" value="${esc(f.date)}" onchange="saleForm.date=this.value"></label>
+      <label><span class="lbl">Sales Type</span>
+        <div class="pill-row">
+          <button class="pill ${f.salesType==='Local'?'active amber':''}" onclick="setSaleType('Local')">Local</button>
+          <button class="pill ${f.salesType==='Export'?'active amber':''}" onclick="setSaleType('Export')">Export</button>
+        </div>
+      </label>
+      <label><span class="lbl">Customer</span><input list="customerList" value="${esc(f.customer)}" onchange="saleForm.customer=this.value" placeholder="Customer name"></label>
+      <label><span class="lbl">Item</span>
+        <div class="pill-row">
+          <button class="pill ${f.itemType==='Full Mass'?'active amber':''}" onclick="setSaleItem('Full Mass')">Full Mass</button>
+          <button class="pill ${f.itemType==='Slices'?'active amber':''}" onclick="setSaleItem('Slices')">Slices</button>
+          <button class="pill ${f.itemType==='Loose Blocks'?'active amber':''}" onclick="setSaleItem('Loose Blocks')">Loose Blocks</button>
+        </div>
+      </label>
+      <label><span class="lbl">Mass ID ${f.itemType==='Loose Blocks'?'(optional)':''}</span><input list="massIdList" value="${esc(f.massId)}" onchange="saleForm.massId=this.value" placeholder="e.g. E 5"></label>
+      <label><span class="lbl">Volume (CBM)</span><input type="number" step="any" value="${esc(f.volumeCBM)}" oninput="saleForm.volumeCBM=this.value; updateSaleCalcs();"></label>
+      <label><span class="lbl">Rate (₹/CBM)</span>
+        ${f.salesType==='Export'
+          ? `<input type="number" step="any" value="${esc(f.rate)}" oninput="saleForm.rate=this.value; updateSaleCalcs();" placeholder="varies by customer">`
+          : `<input value="₹${LOCAL_RATE.toLocaleString('en-IN')} (fixed)" disabled style="background:#f5f5f4;color:#a8a29e;">`}
+      </label>
+      <label><span class="lbl">Sale Value (auto)</span><input id="saleValueField" value="${fmtINR(saleValue)}" disabled style="background:#f5f5f4;font-family:ui-monospace,monospace;"></label>
+      <label><span class="lbl">Payment Received (₹)</span><input type="number" step="any" value="${esc(f.paymentReceived)}" oninput="saleForm.paymentReceived=this.value; updateSaleCalcs();" placeholder="0"></label>
+      <label><span class="lbl">Due (auto)</span><input id="dueField" value="${fmtINR(due)}" disabled style="background:${due>0?'#fee2e2':'#ecfdf5'};color:${due>0?'#dc2626':'#047857'};font-family:ui-monospace,monospace;"></label>
+      <label><span class="lbl">Note (optional)</span><input value="${esc(f.note)}" onchange="saleForm.note=this.value" placeholder="e.g. S3, S4"></label>
+    </div>
+    <button class="btn amber" onclick="submitSale()">${f.id ? 'Save changes' : 'Log sale'}</button>
+    ${f.id ? `<button class="btn ghost" onclick="cancelSaleEdit()">Cancel</button>` : ''}
+  </div>`;
+}
+function updateSaleCalcs(){
+  const f = saleForm;
+  const saleValue = (Number(f.volumeCBM)||0) * (Number(f.rate)||0);
+  const due = saleValue - (Number(f.paymentReceived)||0);
+  const sv = document.getElementById('saleValueField');
+  const dv = document.getElementById('dueField');
+  if (sv) sv.value = fmtINR(saleValue);
+  if (dv){
+    dv.value = fmtINR(due);
+    dv.style.background = due>0 ? '#fee2e2' : '#ecfdf5';
+    dv.style.color = due>0 ? '#dc2626' : '#047857';
+  }
+}
+
+function setSaleType(t){ saleForm.salesType = t; saleForm.rate = t==='Local' ? LOCAL_RATE : ''; renderSalesTab(); }
+function setSaleItem(t){ saleForm.itemType = t; renderSalesTab(); }
+function linkedNoteFor(sale){ return `${sale.itemType}${sale.massId ? ' '+sale.massId : ''}`; }
+
+async function submitSale(){
+  const f = saleForm;
+  if (!f.date || !f.salesType || !f.customer || !f.volumeCBM || !f.rate){ alert('Please fill date, type, customer, volume and rate.'); return; }
+  if (f.itemType !== 'Loose Blocks' && !f.massId){ alert('Please enter the Mass ID.'); return; }
+  const saleValue = (Number(f.volumeCBM)||0) * (Number(f.rate)||0);
+  const newPaid = Number(f.paymentReceived)||0;
+  const { paymentReceived, ...rest } = f;
+  const rec = { ...rest, saleValue, volumeCBM:Number(f.volumeCBM), rate:Number(f.rate), month: monthOf(f.date) };
+
+  let saleId = f.id;
+  if (f.id){
+    const existing = state.sales.find(s=>s.id===f.id);
+    state.sales = state.sales.map(s => s.id===f.id ? { ...s, ...rec, editedBy: state.role } : s);
+    await saveKey(KEYS.SALES, state.sales);
+    // Reconcile payment only if the entered total actually changed — replace this sale's
+    // linked collections with one corrected entry, leaving unrelated collections untouched.
+    const currentPaid = paidOf(existing);
+    if (newPaid !== currentPaid){
+      const withoutThisSale = state.collections.filter(c=>c.linkedSaleId!==f.id);
+      const nextColl = newPaid > 0
+        ? [{ id: uid(), date: today(), customer: rec.customer, amount: newPaid, mode:'—', note:'', month: monthOf(today()), linkedSaleId: f.id, linkedNote: linkedNoteFor(rec) }, ...withoutThisSale]
+        : withoutThisSale;
+      state.collections = nextColl;
+      await saveKey(KEYS.COLLECTION, state.collections);
+    }
+  } else {
+    saleId = uid();
+    rec.id = saleId; rec.createdBy = state.role;
+    state.sales = [...state.sales, rec];
+    await saveKey(KEYS.SALES, state.sales);
+    if (newPaid > 0){
+      const collRec = { id: uid(), date: rec.date, customer: rec.customer, amount: newPaid, mode:'—', note:'', month: monthOf(rec.date), linkedSaleId: saleId, linkedNote: linkedNoteFor(rec) };
+      state.collections = [collRec, ...state.collections];
+      await saveKey(KEYS.COLLECTION, state.collections);
+    }
+  }
+  await addCustomer(f.customer);
+  if (f.massId) await addMassId(f.massId);
+  saleForm = blankSale();
+  flash(f.id ? 'Sale updated' : 'Sale logged');
+  renderSalesTab();
+}
+function editSale(id){
+  const s = state.sales.find(x=>x.id===id);
+  if (!s) return;
+  saleForm = { ...s, paymentReceived: paidOf(s) };
+  renderSalesTab();
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+function cancelSaleEdit(){ saleForm = blankSale(); renderSalesTab(); }
+async function deleteSale(id){
+  if (state.role !== 'Admin') return;
+  if (!confirm('Delete this sale? This also removes any collections linked to it. This cannot be undone.')) return;
+  state.sales = state.sales.filter(s=>s.id!==id);
+  await saveKey(KEYS.SALES, state.sales);
+  state.collections = state.collections.filter(c=>c.linkedSaleId!==id);
+  await saveKey(KEYS.COLLECTION, state.collections);
+  flash('Sale deleted');
+  renderSalesTab();
+}
+
+// ================= COLLECTION =================
+function blankColl(){ return { id:null, date:today(), customer:'', amount:'', gstAmount:'', mode:'Cash', note:'' }; }
+let collForm = blankColl();
+const MODES = ['Cash','Bank Transfer','Cheque','UPI'];
+
+// Running, cumulative-per-customer figures as of a given collection row's date.
+function computeCollectionLedgerRow(c){
+  const cumSalesValue = state.sales.filter(s => s.customer===c.customer && s.date <= c.date).reduce((a,s)=>a+(Number(s.saleValue)||0),0);
+  const cumGST = state.collections.filter(x => x.customer===c.customer && x.date <= c.date).reduce((a,x)=>a+(Number(x.gstAmount)||0),0);
+  const totalDue = cumSalesValue + cumGST;
+  const cumPayments = state.collections.filter(x => x.customer===c.customer && x.date <= c.date).reduce((a,x)=>a+(Number(x.amount)||0),0);
+  const balanceDue = totalDue - cumPayments;
+  return { cumSalesValue, cumGST, totalDue, cumPayments, balanceDue };
+}
+
+function renderCollectionTab(){
+  const pb = resolvePeriod(collPeriod);
+  const periodColl = state.collections.filter(c=>c.date>=pb.from && c.date<=pb.to);
+  const total = periodColl.reduce((a,c)=>a+(Number(c.amount)||0),0);
+  const viaSales = periodColl.filter(c=>c.linkedSaleId).reduce((a,c)=>a+(Number(c.amount)||0),0);
+  const direct = total - viaSales;
+
+  let html = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+    <button class="btn emerald" onclick="downloadCollectionImage()">📷 Download as Image</button>
+    <button class="btn emerald" onclick="downloadCollectionPDF()">📄 Download as PDF</button>
+    <button class="btn emerald" onclick="downloadCollectionExcel()">⬇ Download Excel</button>
+  </div>`;
+
+  html += `<p class="section-title">Collections Report</p>`;
+  html += renderPeriodPicker(collPeriod, 'setCollPeriod');
+
+  html += `
+    <div class="stat-row">
+      <div class="stat emerald"><div class="lbl">Total Collected</div><div class="val">${fmtINR(total)}</div></div>
+      <div class="stat amber"><div class="lbl">Via Sales</div><div class="val">${fmtINR(viaSales)}</div></div>
+      <div class="stat stone"><div class="lbl">Direct</div><div class="val">${fmtINR(direct)}</div></div>
+      <div class="stat stone"><div class="lbl">Entries</div><div class="val">${periodColl.length}</div></div>
+    </div>`;
+
+  html += renderCollForm();
+
+  html += `<div class="table-wrap"><table><thead><tr>
+    <th>Date</th><th>Customer Name</th><th style="text-align:right;">Customer Sales Value</th><th style="text-align:right;">GST Amount</th>
+    <th style="text-align:right;">Total Due Payments</th><th style="text-align:right;">Customer Payments</th><th style="text-align:right;">Balance Due</th><th></th>
+    </tr></thead><tbody>`;
+  if (periodColl.length===0){
+    html += `<tr><td colspan="8" class="empty">No collections logged in this period yet.</td></tr>`;
+  } else {
+    periodColl.slice().reverse().forEach(c=>{
+      const ledger = computeCollectionLedgerRow(c);
+      html += `<tr>
+        <td>${esc(c.date)}</td>
+        <td>${esc(c.customer)}</td>
+        <td class="num">${fmtINR(ledger.cumSalesValue)}</td>
+        <td class="num">${fmtINR(ledger.cumGST)}</td>
+        <td class="num">${fmtINR(ledger.totalDue)}</td>
+        <td class="num" style="color:var(--emerald);">${fmtINR(ledger.cumPayments)}</td>
+        <td class="num" style="color:${ledger.balanceDue>0?'var(--red)':'var(--emerald)'};">${fmtINR(ledger.balanceDue)}</td>
+        <td><div class="actions">
+          <button class="icon-btn" onclick="editColl('${c.id}')" title="Edit">✏️</button>
+          ${state.role==='Admin' ? `<button class="icon-btn danger" onclick="deleteColl('${c.id}')" title="Delete">🗑️</button>` : ''}
+        </div></td>
+      </tr>`;
+    });
+  }
+  html += `</tbody></table></div>
+  <p class="hint">Sales Value, GST, and Payments columns are running totals for that customer, as of each row's date — not just that single entry. Balance Due is their overall running balance at that point.</p>`;
+  html += renderCollectionCaptureBlock();
+  document.getElementById('app').innerHTML = html;
+  refreshDatalists();
+}
+
+function renderCollForm(){
+  const f = collForm;
+  return `
+  <div class="card">
+    <div class="grid">
+      <label><span class="lbl">Date</span><input type="date" value="${esc(f.date)}" onchange="collForm.date=this.value"></label>
+      <label><span class="lbl">Customer</span><input list="customerList" value="${esc(f.customer)}" onchange="collForm.customer=this.value" placeholder="Customer name"></label>
+      <label><span class="lbl">Amount (₹)</span><input type="number" step="any" value="${esc(f.amount)}" oninput="collForm.amount=this.value"></label>
+      <label><span class="lbl">GST Amount (₹, manual)</span><input type="number" step="any" value="${esc(f.gstAmount)}" oninput="collForm.gstAmount=this.value" placeholder="0"></label>
+      <label><span class="lbl">Mode</span>
+        <select onchange="collForm.mode=this.value">
+          ${MODES.map(m=>`<option value="${m}" ${f.mode===m?'selected':''}>${m}</option>`).join('')}
+        </select>
+      </label>
+      <label><span class="lbl">Note (optional)</span><input value="${esc(f.note)}" onchange="collForm.note=this.value" placeholder="e.g. advance for future sale"></label>
+    </div>
+    <button class="btn emerald" onclick="submitColl()">${f.id ? 'Save changes' : 'Log collection'}</button>
+    ${f.id ? `<button class="btn ghost" onclick="cancelCollEdit()">Cancel</button>` : ''}
+  </div>`;
+}
+async function submitColl(){
+  const f = collForm;
+  if (!f.date || !f.customer || !f.amount || !f.mode){ alert('Please fill date, customer, amount and mode.'); return; }
+  const rec = { ...f, amount:Number(f.amount), gstAmount:Number(f.gstAmount)||0, month: monthOf(f.date) };
+  if (f.id){
+    state.collections = state.collections.map(c => c.id===f.id ? { ...c, ...rec, editedBy: state.role } : c);
+  } else {
+    rec.id = uid(); rec.createdBy = state.role;
+    state.collections = [...state.collections, rec];
+  }
+  await saveKey(KEYS.COLLECTION, state.collections);
+  await addCustomer(f.customer);
+  collForm = blankColl();
+  flash(f.id ? 'Collection updated' : 'Collection logged');
+  renderCollectionTab();
+}
+function editColl(id){
+  const c = state.collections.find(x=>x.id===id);
+  if (!c) return;
+  collForm = { ...c };
+  renderCollectionTab();
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+function cancelCollEdit(){ collForm = blankColl(); renderCollectionTab(); }
+async function deleteColl(id){
+  if (state.role !== 'Admin') return;
+  if (!confirm('Delete this collection entry? This cannot be undone.')) return;
+  state.collections = state.collections.filter(c=>c.id!==id);
+  await saveKey(KEYS.COLLECTION, state.collections);
+  flash('Collection deleted');
+  renderCollectionTab();
+}
+
+function renderCollectionCaptureBlock(){
+  const AMBER='#b45309', TEAL='#0f766e', EMERALD='#047857', RED='#dc2626';
+  const pb = resolvePeriod(collPeriod);
+  const periodColl = state.collections.filter(c=>c.date>=pb.from && c.date<=pb.to);
+  const total = periodColl.reduce((a,c)=>a+(Number(c.amount)||0),0);
+  const viaSales = periodColl.filter(c=>c.linkedSaleId).reduce((a,c)=>a+(Number(c.amount)||0),0);
+  const direct = total - viaSales;
+  const todayStr = today();
+  const fmtDDMMYYYY = (dateStr) => { const [y,m,d] = dateStr.split('-'); return `${d}/${m}/${y}`; };
+
+  let inner = `<div style="background:linear-gradient(135deg,${EMERALD},#064e3b);border-radius:12px;padding:22px 24px;color:white;margin-bottom:20px;">
+    <h1 style="margin:0 0 18px;font-size:28px;font-weight:800;text-align:center;letter-spacing:0.5px;">Vinayaka Krupa Granites</h1>
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px;">
+      <div>
+        <div style="font-size:22px;font-weight:700;">Collections Report</div>
+        <p style="margin:4px 0 0;font-size:12px;opacity:0.9;">${esc(pb.from)} to ${esc(pb.to)}</p>
+      </div>
+      <div style="font-size:38px;font-weight:800;font-family:ui-monospace,monospace;letter-spacing:1px;line-height:1;">${esc(fmtDDMMYYYY(todayStr))}</div>
+    </div>
+  </div>`;
+
+  inner += `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+    ${dashKpi('Total Collected', fmtINR(total), EMERALD)}
+    ${dashKpi('Via Sales', fmtINR(viaSales), AMBER)}
+    ${dashKpi('Direct', fmtINR(direct), '#44403c')}
+    ${dashKpi('Entries', String(periodColl.length), TEAL)}
+  </div>`;
+
+  inner += dashHeader(`Collections — ${pb.from} to ${pb.to}`, EMERALD);
+  let rowsHtml = '';
+  if (periodColl.length===0){ rowsHtml = `<tr><td colspan="7" style="text-align:center;color:#a8a29e;padding:10px;">No collections in this period.</td></tr>`; }
+  else {
+    periodColl.slice().reverse().forEach((c,i)=>{
+      const ledger = computeCollectionLedgerRow(c);
+      rowsHtml += `<tr style="background:${i%2?'#fafaf9':'#fff'};">
+        <td style="padding:7px 10px;">${esc(c.date)}</td>
+        <td style="padding:7px 10px;">${esc(c.customer)}</td>
+        <td style="padding:7px 10px;text-align:right;">${fmtINR(ledger.cumSalesValue)}</td>
+        <td style="padding:7px 10px;text-align:right;">${fmtINR(ledger.cumGST)}</td>
+        <td style="padding:7px 10px;text-align:right;">${fmtINR(ledger.totalDue)}</td>
+        <td style="padding:7px 10px;text-align:right;color:${EMERALD};">${fmtINR(ledger.cumPayments)}</td>
+        <td style="padding:7px 10px;text-align:right;font-weight:600;color:${ledger.balanceDue>0?RED:EMERALD};">${fmtINR(ledger.balanceDue)}</td>
+      </tr>`;
+    });
+  }
+  inner += dashTable([{label:'Date'},{label:'Customer'},{label:'Sales Value',right:1},{label:'GST',right:1},{label:'Total Due',right:1},{label:'Payments',right:1},{label:'Balance',right:1}], rowsHtml, EMERALD);
+
+  return `<div id="collectionCaptureFull" style="position:absolute;left:-9999px;top:0;width:820px;background:#fafaf9;padding:24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1c1917;">${inner}</div>`;
+}
+
+async function downloadCollectionImage(){
+  if (typeof html2canvas === 'undefined'){ alert('Image export library did not load — check your internet connection and try again.'); return; }
+  const el = document.getElementById('collectionCaptureFull');
+  if (!el){ alert('Nothing to capture yet.'); return; }
+  try {
+    const canvas = await html2canvas(el, { backgroundColor: '#ffffff', scale: 2 });
+    const pb = resolvePeriod(collPeriod);
+    const link = document.createElement('a');
+    link.download = `VKG_Collections_${pb.from}_to_${pb.to}.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+    flash('Collections image downloaded');
+  } catch(e){ console.error(e); alert('Could not generate the image — please try again.'); }
+}
+async function downloadCollectionPDF(){
+  if (typeof html2canvas === 'undefined' || typeof window.jspdf === 'undefined'){ alert('PDF export library did not load — check your internet connection and try again.'); return; }
+  const el = document.getElementById('collectionCaptureFull');
+  if (!el){ alert('Nothing to capture yet.'); return; }
+  try {
+    const canvas = await html2canvas(el, { backgroundColor: '#ffffff', scale: 2 });
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF('p', 'pt', 'a4');
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const imgWidth = pageWidth;
+    const imgHeight = (canvas.height * imgWidth) / canvas.width;
+    const imgData = canvas.toDataURL('image/png');
+    let heightLeft = imgHeight, position = 0;
+    pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+    heightLeft -= pageHeight;
+    while (heightLeft > 0){
+      position = heightLeft - imgHeight;
+      pdf.addPage();
+      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+      heightLeft -= pageHeight;
+    }
+    const pb = resolvePeriod(collPeriod);
+    pdf.save(`VKG_Collections_${pb.from}_to_${pb.to}.pdf`);
+    flash('Collections PDF downloaded');
+  } catch(e){ console.error(e); alert('Could not generate the PDF — please try again.'); }
+}
+function downloadCollectionExcel(){
+  if (typeof XLSX === 'undefined'){ alert('Excel export library did not load — check your internet connection and try again.'); return; }
+  const pb = resolvePeriod(collPeriod);
+  const periodColl = state.collections.filter(c=>c.date>=pb.from && c.date<=pb.to);
+  const rows = periodColl.map(c=>{
+    const ledger = computeCollectionLedgerRow(c);
+    return {
+      'Date': c.date, 'Customer Name': c.customer, 'Customer Sales Value': ledger.cumSalesValue,
+      'GST Amount': ledger.cumGST, 'Total Due Payments': ledger.totalDue,
+      'Customer Payments': ledger.cumPayments, 'Balance Due': ledger.balanceDue,
+      'Mode': c.mode, 'Source': c.linkedSaleId ? `Sale — ${c.linkedNote||'linked'}` : 'Direct', 'Note': c.note||''
+    };
+  });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Collections');
+  XLSX.writeFile(wb, `VKG_Collections_${pb.from}_to_${pb.to}.xlsx`);
+  flash('Collections Excel downloaded');
+}
+
+// ================= MAIN RENDER =================
+function dashKpi(label, value, bg){
+  return `<div style="flex:1;min-width:150px;background:${bg};border-radius:10px;padding:14px 16px;color:white;box-shadow:0 2px 6px rgba(0,0,0,0.12);">
+    <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;opacity:0.85;margin-bottom:4px;">${esc(label)}</div>
+    <div style="font-size:19px;font-weight:700;font-family:ui-monospace,monospace;">${value}</div>
+  </div>`;
+}
+function dashHeader(text, bg){
+  return `<div style="display:flex;align-items:center;gap:10px;margin:26px 0 12px;">
+    <div style="width:5px;height:20px;background:${bg};border-radius:3px;"></div>
+    <h3 style="font-size:14px;text-transform:uppercase;letter-spacing:0.5px;color:#1c1917;margin:0;font-weight:700;">${esc(text)}</h3>
+  </div>`;
+}
+function dashTable(headers, rowsHtml, headBg){
+  return `<div style="border-radius:10px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,0.08);margin-bottom:8px;">
+  <table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <thead><tr>${headers.map(h=>`<th style="background:${headBg};color:white;padding:8px 10px;text-align:${h.right?'right':'left'};font-size:10px;text-transform:uppercase;letter-spacing:0.4px;">${esc(h.label)}</th>`).join('')}</tr></thead>
+    <tbody>${rowsHtml}</tbody>
+  </table></div>`;
+}
+
+function renderFullCaptureBlock(){
+  const AMBER='#b45309', TEAL='#0f766e', EMERALD='#047857', RED='#dc2626', STONE='#44403c';
+  const monthSales = state.sales.filter(s=>s.month===state.month); // Target vs Achievement stays tied to the month picker
+  const pb = resolvePeriod(salesPeriod);
+  const periodSales = state.sales.filter(s=>s.date>=pb.from && s.date<=pb.to);
+  const periodColl = state.collections.filter(c=>c.date>=pb.from && c.date<=pb.to);
+  const todayStr = today();
+  const todaySales = state.sales.filter(s=>s.date===todayStr);
+  const targetLines = targetLinesOf(state.month);
+  const targetVol = targetLines.reduce((a,l)=>a+(Number(l.volumeCBM)||0),0);
+  const targetRev = targetLines.reduce((a,l)=>a+(Number(l.volumeCBM)||0)*(Number(l.rate)||0),0);
+  const achievedVol = monthSales.reduce((a,s)=>a+(Number(s.volumeCBM)||0),0);
+  const achievedRev = monthSales.reduce((a,s)=>a+(Number(s.saleValue)||0),0);
+  const periodValue = periodSales.reduce((a,s)=>a+(Number(s.saleValue)||0),0);
+  const periodPaid = periodSales.reduce((a,s)=>a+paidOf(s),0);
+  const periodDue = periodValue - periodPaid;
+  const totalColl = periodColl.reduce((a,c)=>a+(Number(c.amount)||0),0);
+
+  const fmtDDMMYYYY = (dateStr) => { const [y,m,d] = dateStr.split('-'); return `${d}/${m}/${y}`; };
+  let inner = `<div style="background:linear-gradient(135deg,${AMBER},#7c2d12);border-radius:12px;padding:22px 24px;color:white;margin-bottom:20px;">
+    <h1 style="margin:0 0 18px;font-size:28px;font-weight:800;text-align:center;letter-spacing:0.5px;">Vinayaka Krupa Granites</h1>
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px;">
+      <div>
+        <div style="font-size:22px;font-weight:700;">Sales &amp; Collection Summary</div>
+        <p style="margin:4px 0 0;font-size:12px;opacity:0.9;">${esc(pb.from)} to ${esc(pb.to)}</p>
+      </div>
+      <div style="font-size:38px;font-weight:800;font-family:ui-monospace,monospace;letter-spacing:1px;line-height:1;">${esc(fmtDDMMYYYY(todayStr))}</div>
+    </div>
+  </div>`;
+
+  inner += `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+    ${dashKpi('Sale Value', fmtINR(periodValue), AMBER)}
+    ${dashKpi('Collected', fmtINR(periodPaid), EMERALD)}
+    ${dashKpi('Due', fmtINR(periodDue), periodDue>0?RED:EMERALD)}
+    ${dashKpi('Total Collections', fmtINR(totalColl), TEAL)}
+  </div>`;
+
+  inner += dashHeader('Target vs Achievement (Month Picker)', TEAL);
+  inner += `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+    ${dashKpi('Target Volume', targetVol.toLocaleString('en-IN')+' CBM', TEAL)}
+    ${dashKpi('Achieved Volume', achievedVol.toLocaleString('en-IN')+' CBM', AMBER)}
+    ${dashKpi('Balance Volume', Math.max(targetVol-achievedVol,0).toLocaleString('en-IN')+' CBM', targetVol>achievedVol?RED:EMERALD)}
+  </div>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+    ${dashKpi('Target Revenue', fmtINRCr(targetRev), TEAL)}
+    ${dashKpi('Achieved Revenue', fmtINRCr(achievedRev), AMBER)}
+    ${dashKpi('Balance Revenue', fmtINRCr(Math.max(targetRev-achievedRev,0)), targetRev>achievedRev?RED:EMERALD)}
+  </div>`;
+
+  const salesTargetLines = targetLinesOf(state.month);
+  const unplannedExport = computeUnplannedSales(monthSales, salesTargetLines);
+  inner += dashHeader('Sales Target vs Actually Sold — Mass-wise (Month Picker)', AMBER);
+  let tRows = '';
+  if (salesTargetLines.length===0 && unplannedExport.length===0){ tRows = `<tr><td colspan="7" style="text-align:center;color:#a8a29e;padding:10px;">No sales target lines set for this month.</td></tr>`; }
+  else {
+    salesTargetLines.forEach((l,i)=>{ const targetRevLine=(Number(l.volumeCBM)||0)*(Number(l.rate)||0); const matched=monthSales.filter(s=>s.massId===l.massId); const sold=matched.reduce((a,s)=>a+(Number(s.volumeCBM)||0),0); const soldRev=matched.reduce((a,s)=>a+(Number(s.saleValue)||0),0); const bal=(Number(l.volumeCBM)||0)-sold; const revBal=targetRevLine-soldRev; tRows += `<tr style="background:${i%2?'#fafaf9':'#fff'};"><td style="padding:7px 10px;font-weight:600;">${esc(l.massId)}</td><td style="padding:7px 10px;text-align:right;">${Number(l.volumeCBM).toLocaleString('en-IN')}</td><td style="padding:7px 10px;text-align:right;">${fmtINRCr(targetRevLine)}</td><td style="padding:7px 10px;text-align:right;">${sold.toLocaleString('en-IN')}</td><td style="padding:7px 10px;text-align:right;color:${EMERALD};">${fmtINRCr(soldRev)}</td><td style="padding:7px 10px;text-align:right;font-weight:600;color:${bal>0?RED:EMERALD};">${bal.toLocaleString('en-IN')}</td><td style="padding:7px 10px;text-align:right;font-weight:600;color:${revBal>0?RED:EMERALD};">${fmtINRCr(revBal)}</td></tr>`; });
+    if (salesTargetLines.length>0){
+      const sTV=salesTargetLines.reduce((a,l)=>a+(Number(l.volumeCBM)||0),0);
+      const sTR=salesTargetLines.reduce((a,l)=>a+(Number(l.volumeCBM)||0)*(Number(l.rate)||0),0);
+      const sSV=salesTargetLines.reduce((a,l)=>a+monthSales.filter(s=>s.massId===l.massId).reduce((x,s)=>x+(Number(s.volumeCBM)||0),0),0);
+      const sSR=salesTargetLines.reduce((a,l)=>a+monthSales.filter(s=>s.massId===l.massId).reduce((x,s)=>x+(Number(s.saleValue)||0),0),0);
+      const sVB=sTV-sSV, sRB=sTR-sSR;
+      tRows += `<tr style="background:#f5f5f4;font-weight:700;border-top:2px solid #d6d3d1;"><td style="padding:8px 10px;">TOTAL</td><td style="padding:8px 10px;text-align:right;">${sTV.toLocaleString('en-IN')}</td><td style="padding:8px 10px;text-align:right;">${fmtINRCr(sTR)}</td><td style="padding:8px 10px;text-align:right;">${sSV.toLocaleString('en-IN')}</td><td style="padding:8px 10px;text-align:right;color:${EMERALD};">${fmtINRCr(sSR)}</td><td style="padding:8px 10px;text-align:right;color:${sVB>0?RED:EMERALD};">${sVB.toLocaleString('en-IN')}</td><td style="padding:8px 10px;text-align:right;color:${sRB>0?RED:EMERALD};">${fmtINRCr(sRB)}</td></tr>`;
+    }
+    unplannedExport.forEach(u=>{
+      tRows += `<tr style="background:#fffbeb;"><td style="padding:7px 10px;font-weight:600;">${esc(u.massId)} <span style="background:#fef3c7;color:${AMBER};border-radius:999px;padding:1px 8px;font-size:10px;">Unplanned</span></td><td style="padding:7px 10px;text-align:right;color:#a8a29e;">—</td><td style="padding:7px 10px;text-align:right;color:#a8a29e;">—</td><td style="padding:7px 10px;text-align:right;">${u.vol.toLocaleString('en-IN')}</td><td style="padding:7px 10px;text-align:right;color:${EMERALD};">${fmtINRCr(u.rev)}</td><td style="padding:7px 10px;text-align:right;color:#a8a29e;">—</td><td style="padding:7px 10px;text-align:right;color:#a8a29e;">—</td></tr>`;
+    });
+  }
+  inner += dashTable([{label:'Mass ID'},{label:'Target Vol',right:1},{label:'Target Rev',right:1},{label:'Sold Vol',right:1},{label:'Sold Rev',right:1},{label:'Vol Bal',right:1},{label:'Rev Bal',right:1}], tRows, AMBER);
+
+  inner += dashHeader(`Today's Sales — ${todayStr}`, TEAL);
+  let todayRows = '';
+  if (todaySales.length===0){ todayRows = `<tr><td colspan="5" style="text-align:center;color:#a8a29e;padding:10px;">No sales logged today yet.</td></tr>`; }
+  else { todaySales.forEach((s,i)=>{ todayRows += `<tr style="background:${i%2?'#fafaf9':'#fff'};"><td style="padding:7px 10px;">${esc(s.customer)}</td><td style="padding:7px 10px;">${esc(s.itemType)}</td><td style="padding:7px 10px;text-align:right;">${s.volumeCBM}</td><td style="padding:7px 10px;text-align:right;">${fmtINR(s.saleValue)}</td><td style="padding:7px 10px;text-align:right;color:${EMERALD};">${fmtINR(paidOf(s))}</td></tr>`; }); }
+  inner += dashTable([{label:'Customer'},{label:'Item'},{label:'Vol',right:1},{label:'Value',right:1},{label:'Paid',right:1}], todayRows, TEAL);
+
+  inner += dashHeader(`Confirmed Sales — ${pb.from} to ${pb.to} (${periodSales.length})`, AMBER);
+  let salesRowsHtml = '';
+  if (periodSales.length===0){ salesRowsHtml = `<tr><td colspan="7" style="text-align:center;color:#a8a29e;padding:10px;">No sales in this period.</td></tr>`; }
+  else { periodSales.forEach((s,i)=>{ const paid=paidOf(s); const due=dueOf(s); salesRowsHtml += `<tr style="background:${i%2?'#fafaf9':'#fff'};"><td style="padding:7px 10px;">${esc(s.date)}</td><td style="padding:7px 10px;">${esc(s.customer)}</td><td style="padding:7px 10px;">${esc(s.itemType)}</td><td style="padding:7px 10px;text-align:right;">${s.volumeCBM}</td><td style="padding:7px 10px;text-align:right;">${fmtINR(s.saleValue)}</td><td style="padding:7px 10px;text-align:right;color:${EMERALD};">${fmtINR(paid)}</td><td style="padding:7px 10px;text-align:right;font-weight:600;color:${due>0?RED:EMERALD};">${fmtINR(due)}</td></tr>`; }); }
+  inner += dashTable([{label:'Date'},{label:'Customer'},{label:'Item'},{label:'Vol',right:1},{label:'Value',right:1},{label:'Paid',right:1},{label:'Due',right:1}], salesRowsHtml, AMBER);
+
+
+
+  return `<div id="summaryCaptureFull" style="position:absolute;left:-9999px;top:0;width:820px;background:#fafaf9;padding:24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1c1917;">${inner}</div>`;
+}
+
+async function downloadSummaryImage(){
+  if (typeof html2canvas === 'undefined'){ alert('Image export library did not load — check your internet connection and try again.'); return; }
+  const el = document.getElementById('summaryCaptureFull');
+  if (!el){ alert('Nothing to capture yet.'); return; }
+  try {
+    const canvas = await html2canvas(el, { backgroundColor: '#ffffff', scale: 2 });
+    const link = document.createElement('a');
+    link.download = `VKG_Sales_Summary_${resolvePeriod(salesPeriod).from}_to_${resolvePeriod(salesPeriod).to}.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+    flash('Summary image downloaded');
+  } catch(e){ console.error(e); alert('Could not generate the image — please try again.'); }
+}
+
+async function downloadSummaryPDF(){
+  if (typeof html2canvas === 'undefined' || typeof window.jspdf === 'undefined'){ alert('PDF export library did not load — check your internet connection and try again.'); return; }
+  const el = document.getElementById('summaryCaptureFull');
+  if (!el){ alert('Nothing to capture yet.'); return; }
+  try {
+    const canvas = await html2canvas(el, { backgroundColor: '#ffffff', scale: 2 });
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF('p', 'pt', 'a4');
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const imgWidth = pageWidth;
+    const imgHeight = (canvas.height * imgWidth) / canvas.width;
+    const imgData = canvas.toDataURL('image/png');
+
+    let heightLeft = imgHeight;
+    let position = 0;
+    pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+    heightLeft -= pageHeight;
+    while (heightLeft > 0){
+      position = heightLeft - imgHeight;
+      pdf.addPage();
+      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+      heightLeft -= pageHeight;
+    }
+    pdf.save(`VKG_Sales_Summary_${resolvePeriod(salesPeriod).from}_to_${resolvePeriod(salesPeriod).to}.pdf`);
+    flash('Summary PDF downloaded');
+  } catch(e){ console.error(e); alert('Could not generate the PDF — please try again.'); }
+}
+
+function downloadExcel(){
+  if (typeof XLSX === 'undefined'){ alert('Excel export library did not load — check your internet connection and try again.'); return; }
+  const pb = resolvePeriod(salesPeriod);
+  const monthSales = state.sales.filter(s=>s.date>=pb.from && s.date<=pb.to);
+  const monthColl = state.collections.filter(c=>c.date>=pb.from && c.date<=pb.to);
+
+  const salesRows = monthSales.map(s=>{
+    const paid = paidOf(s);
+    const due = dueOf(s);
+    return {
+      'Date': s.date, 'Type': s.salesType, 'Customer': s.customer, 'Item': s.itemType, 'Mass ID': s.massId||'',
+      'Volume (CBM)': s.volumeCBM, 'Rate': s.rate, 'Sale Value': s.saleValue, 'Paid': paid, 'Due': due, 'Note': s.note||''
+    };
+  });
+  const salesTargetRows = targetLinesOf(state.month).map(l=>{
+    const targetRevLine = (Number(l.volumeCBM)||0)*(Number(l.rate)||0);
+    const matched = monthSales.filter(s=>s.massId===l.massId);
+    const sold = matched.reduce((a,s)=>a+(Number(s.volumeCBM)||0),0);
+    const soldRev = matched.reduce((a,s)=>a+(Number(s.saleValue)||0),0);
+    return {
+      'Mass ID': l.massId, 'Target Volume (CBM)': l.volumeCBM, 'Rate': l.rate,
+      'Target Revenue': targetRevLine,
+      'Sold Volume (CBM)': sold, 'Sold Revenue': soldRev,
+      'Volume Balance (CBM)': (Number(l.volumeCBM)||0) - sold, 'Revenue Balance': targetRevLine - soldRev
+    };
+  });
+  if (salesTargetRows.length > 0){
+    const sum = (key) => salesTargetRows.reduce((a,r)=>a+(Number(r[key])||0),0);
+    salesTargetRows.push({
+      'Mass ID': 'TOTAL', 'Target Volume (CBM)': sum('Target Volume (CBM)'), 'Rate': '',
+      'Target Revenue': sum('Target Revenue'),
+      'Sold Volume (CBM)': sum('Sold Volume (CBM)'), 'Sold Revenue': sum('Sold Revenue'),
+      'Volume Balance (CBM)': sum('Volume Balance (CBM)'), 'Revenue Balance': sum('Revenue Balance')
+    });
+  }
+  computeUnplannedSales(monthSales, targetLinesOf(state.month)).forEach(u=>{
+    salesTargetRows.push({
+      'Mass ID': `${u.massId} (Unplanned)`, 'Target Volume (CBM)': '', 'Rate': '',
+      'Target Revenue': '', 'Sold Volume (CBM)': u.vol, 'Sold Revenue': u.rev,
+      'Volume Balance (CBM)': '', 'Revenue Balance': ''
+    });
+  });
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(salesRows), 'Sales');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(salesTargetRows), 'Sales Target (Mass-wise)');
+  XLSX.writeFile(wb, `VKG_Sales_${pb.from}_to_${pb.to}.xlsx`);
+  flash('Excel downloaded');
+}
+
+function renderCustomerSummaryTab(){
+  const byCustomer = {};
+  state.sales.forEach(s=>{
+    const c = s.customer || '(no customer)';
+    if (!byCustomer[c]) byCustomer[c] = { customer:c, vol:0, salesValue:0, collected:0 };
+    byCustomer[c].vol += Number(s.volumeCBM)||0;
+    byCustomer[c].salesValue += Number(s.saleValue)||0;
+  });
+  state.collections.forEach(c=>{
+    const name = c.customer || '(no customer)';
+    if (!byCustomer[name]) byCustomer[name] = { customer:name, vol:0, salesValue:0, collected:0 };
+    byCustomer[name].collected += Number(c.amount)||0;
+  });
+  const rows = Object.values(byCustomer).sort((a,b)=>b.salesValue-a.salesValue);
+  const totalVol = rows.reduce((a,r)=>a+r.vol,0);
+  const totalSales = rows.reduce((a,r)=>a+r.salesValue,0);
+  const totalColl = rows.reduce((a,r)=>a+r.collected,0);
+
+  let html = `
+    <p class="section-title">Customer Summary — All Time (first recorded month through today)</p>
+    <div class="stat-row">
+      <div class="stat amber"><div class="lbl">Total Volume</div><div class="val">${totalVol.toLocaleString('en-IN')} CBM</div></div>
+      <div class="stat teal"><div class="lbl">Total Sales Value</div><div class="val">${fmtINRCr(totalSales)}</div></div>
+      <div class="stat emerald"><div class="lbl">Total Collections</div><div class="val">${fmtINRCr(totalColl)}</div></div>
+    </div>
+    <div class="table-wrap"><table><thead><tr>
+      <th>Customer Name</th><th style="text-align:right;">Total Volume (CBM)</th><th style="text-align:right;">Total Sales Value</th><th style="text-align:right;">Total Collections</th>
+    </tr></thead><tbody>`;
+  if (rows.length===0){
+    html += `<tr><td colspan="4" class="empty">No customers recorded yet.</td></tr>`;
+  } else {
+    rows.forEach(r=>{
+      html += `<tr>
+        <td>${esc(r.customer)}</td>
+        <td class="num">${r.vol.toLocaleString('en-IN')}</td>
+        <td class="num">${fmtINR(r.salesValue)}</td>
+        <td class="num" style="color:var(--emerald);">${fmtINR(r.collected)}</td>
+      </tr>`;
+    });
+  }
+  html += `</tbody></table></div>
+  <p class="hint">This customer table always reflects every month you've ever recorded — it ignores the month picker above.</p>`;
+
+  const byMonth = {};
+  state.sales.forEach(s=>{
+    const m = s.month || monthOf(s.date);
+    if (!byMonth[m]) byMonth[m] = { month:m, vol:0, salesValue:0, collected:0 };
+    byMonth[m].vol += Number(s.volumeCBM)||0;
+    byMonth[m].salesValue += Number(s.saleValue)||0;
+  });
+  state.collections.forEach(c=>{
+    const m = c.month || monthOf(c.date);
+    if (!byMonth[m]) byMonth[m] = { month:m, vol:0, salesValue:0, collected:0 };
+    byMonth[m].collected += Number(c.amount)||0;
+  });
+  const monthRows = Object.values(byMonth).sort((a,b)=>a.month.localeCompare(b.month));
+
+  html += `<p class="section-title" style="margin-top:24px;">Month-wise Breakdown</p>
+    <div class="table-wrap"><table><thead><tr>
+      <th>Month</th><th style="text-align:right;">Volume (CBM)</th><th style="text-align:right;">Sales Value</th><th style="text-align:right;">Collections</th>
+    </tr></thead><tbody>`;
+  if (monthRows.length===0){
+    html += `<tr><td colspan="4" class="empty">No data recorded yet.</td></tr>`;
+  } else {
+    monthRows.forEach(r=>{
+      html += `<tr>
+        <td>${esc(r.month)}</td>
+        <td class="num">${r.vol.toLocaleString('en-IN')}</td>
+        <td class="num">${fmtINR(r.salesValue)}</td>
+        <td class="num" style="color:var(--emerald);">${fmtINR(r.collected)}</td>
+      </tr>`;
+    });
+  }
+  html += `</tbody></table></div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
+    <button class="btn teal" onclick="downloadCustomerSummaryExcel()">⬇ Download Excel</button>
+  </div>`;
+  document.getElementById('app').innerHTML = html;
+  refreshDatalists();
+}
+
+function downloadCustomerSummaryExcel(){
+  if (typeof XLSX === 'undefined'){ alert('Excel export library did not load — check your internet connection and try again.'); return; }
+  const byCustomer = {};
+  state.sales.forEach(s=>{
+    const c = s.customer || '(no customer)';
+    if (!byCustomer[c]) byCustomer[c] = { customer:c, vol:0, salesValue:0, collected:0 };
+    byCustomer[c].vol += Number(s.volumeCBM)||0;
+    byCustomer[c].salesValue += Number(s.saleValue)||0;
+  });
+  state.collections.forEach(c=>{
+    const name = c.customer || '(no customer)';
+    if (!byCustomer[name]) byCustomer[name] = { customer:name, vol:0, salesValue:0, collected:0 };
+    byCustomer[name].collected += Number(c.amount)||0;
+  });
+  const customerRows = Object.values(byCustomer).sort((a,b)=>b.salesValue-a.salesValue).map(r=>({
+    'Customer Name': r.customer, 'Total Volume (CBM)': r.vol, 'Total Sales Value': r.salesValue, 'Total Collections': r.collected
+  }));
+
+  const byMonth = {};
+  state.sales.forEach(s=>{
+    const m = s.month || monthOf(s.date);
+    if (!byMonth[m]) byMonth[m] = { month:m, vol:0, salesValue:0, collected:0 };
+    byMonth[m].vol += Number(s.volumeCBM)||0;
+    byMonth[m].salesValue += Number(s.saleValue)||0;
+  });
+  state.collections.forEach(c=>{
+    const m = c.month || monthOf(c.date);
+    if (!byMonth[m]) byMonth[m] = { month:m, vol:0, salesValue:0, collected:0 };
+    byMonth[m].collected += Number(c.amount)||0;
+  });
+  const monthRows = Object.values(byMonth).sort((a,b)=>a.month.localeCompare(b.month)).map(r=>({
+    'Month': r.month, 'Volume (CBM)': r.vol, 'Sales Value': r.salesValue, 'Collections': r.collected
+  }));
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(customerRows), 'Customer-wise');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(monthRows), 'Month-wise');
+  XLSX.writeFile(wb, `VKG_Customer_Summary_${today()}.xlsx`);
+  flash('Customer summary Excel downloaded');
+}
+
+function render(){
+  if (state.loading){ document.getElementById('app').innerHTML = '<div class="empty">Loading…</div>'; return; }
+  ['sales','collection','summary'].forEach(t=>{
+    document.getElementById('tabBtn-'+t).classList.toggle('active', state.tab===t);
+  });
+  targetLineDraft = null;
+  if (state.tab==='sales') renderSalesTab();
+  else if (state.tab==='collection') renderCollectionTab();
+  else renderCustomerSummaryTab();
+}
+</script>
+</body>
+</html>
