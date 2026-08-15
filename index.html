@@ -170,9 +170,9 @@ async function loadKey(key, fallback){
       const { data, error } = await sb.from('sales_entries').select('*').order('sale_date');
       if (error) throw error;
       return data.map(s => ({
-        id: s.id, date: s.sale_date, salesType: s.sales_type || 'Local', customer: s.customer || '',
+        id: s.id, date: s.sale_date, month: monthOf(s.sale_date), salesType: s.sales_type || 'Local', customer: s.customer || '',
         itemType: s.item_type || 'Full Mass', massId: s.mass_id || '', volumeCBM: s.volume_cbm ?? '',
-        rate: s.rate ?? '', paymentReceived: '', note: s.note || ''
+        rate: s.rate ?? '', saleValue: s.sale_value ?? ((Number(s.volume_cbm)||0) * (Number(s.rate)||0)), paymentReceived: '', note: s.note || ''
       }));
     }
     if (key === KEYS.COLLECTION){
