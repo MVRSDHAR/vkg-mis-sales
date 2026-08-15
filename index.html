@@ -184,13 +184,11 @@ async function loadKey(key, fallback){
       }));
     }
     if (key === KEYS.TARGET){
-      const { data: targets, error } = await sb.from('sales_targets').select('*').order('month');
+      const { data, error } = await sb.from('sales_targets_v2').select('*').order('month');
       if (error) throw error;
-      const { data: lines, error: lErr } = await sb.from('sales_target_lines').select('*');
-      if (lErr) throw lErr;
-      return targets.map(t => ({
-        id: t.id, month: t.month,
-        lines: lines.filter(l=>l.target_id===t.id).map(l=>({ id: l.id, massId: l.mass_id, volumeCBM: l.volume_cbm ?? '', rate: l.rate ?? '' }))
+      return data.map(t => ({
+        id: t.id, month: t.month, salesType: t.sales_type,
+        volumeCBM: t.volume_cbm ?? '', rate: t.rate ?? ''
       }));
     }
     return fallback;
@@ -231,17 +229,12 @@ async function saveKey(key, value){
         inserted.forEach((row,i)=>{ value[i].id = row.id; });
       }
     } else if (key === KEYS.TARGET){
-      const { error: delErr } = await sb.from('sales_targets').delete().not('id','is',null);
-      if (delErr) throw delErr;
       for (const t of value){
-        const { data: inserted, error } = await sb.from('sales_targets').insert({ month: t.month }).select().single();
+        const { data: inserted, error } = await sb.from('sales_targets_v2')
+          .upsert({ id: t.id, month: t.month, sales_type: t.salesType, volume_cbm: t.volumeCBM||null, rate: t.rate||null }, { onConflict: 'month,sales_type' })
+          .select().single();
         if (error) throw error;
         t.id = inserted.id;
-        if (t.lines && t.lines.length){
-          const lineRows = t.lines.map(l=>({ target_id: inserted.id, mass_id: l.massId, volume_cbm: l.volumeCBM||null, rate: l.rate||null }));
-          const { error: lErr } = await sb.from('sales_target_lines').insert(lineRows);
-          if (lErr) throw lErr;
-        }
       }
     }
     return true;
@@ -451,176 +444,74 @@ function refreshDatalists(){
 }
 
 // ================= TARGET (simple, per-month) =================
-let targetLineDraft = null; // { id, massId, volumeCBM, rate } while adding/editing a line
-function getTarget(month){ return state.targets.find(t=>t.month===month); }
-function targetLinesOf(month){ const t = getTarget(month); return (t && t.lines) || []; }
+function getTargetRow(month, salesType){ return state.targets.find(t=>t.month===month && t.salesType===salesType); }
 
-function blankTargetLine(){ return { id:null, massId:'', volumeCBM:'', rate:LOCAL_RATE }; }
-function openTargetLineForm(lineId){
-  if (lineId){
-    const line = targetLinesOf(state.month).find(l=>l.id===lineId);
-    targetLineDraft = line ? { ...line } : blankTargetLine();
-  } else {
-    targetLineDraft = blankTargetLine();
-  }
-  renderSalesTab();
-}
-function closeTargetLineForm(){ targetLineDraft = null; renderSalesTab(); }
-function updateTargetLineRevenuePreview(){
-  const el = document.getElementById('targetLineRevenuePreview');
-  if (el) el.value = fmtINR((Number(targetLineDraft.volumeCBM)||0) * (Number(targetLineDraft.rate)||0));
-}
-async function submitTargetLine(){
-  const d = targetLineDraft;
-  if (!d.massId || !d.volumeCBM){ alert('Please fill Mass ID and Volume.'); return; }
-  const rec = { id: d.id || uid(), massId: d.massId, volumeCBM: Number(d.volumeCBM), rate: Number(d.rate)||LOCAL_RATE };
-  let target = getTarget(state.month);
-  if (!target){ target = { id: uid(), month: state.month, lines: [] }; state.targets.push(target); }
-  if (d.id){ target.lines = target.lines.map(l=>l.id===d.id ? rec : l); }
-  else { target.lines = [...(target.lines||[]), rec]; }
+async function saveTargetRow(salesType, volumeCBM, rate){
+  const existing = getTargetRow(state.month, salesType);
+  const rec = { month: state.month, salesType, volumeCBM: Number(volumeCBM)||0, rate: Number(rate)||0 };
+  if (existing){ rec.id = existing.id; state.targets = state.targets.map(t => t.id===existing.id ? rec : t); }
+  else { state.targets = [...state.targets, rec]; }
   await saveKey(KEYS.TARGET, state.targets);
-  await addMassId(d.massId);
-  targetLineDraft = null;
-  flash('Target line saved');
+  flash(salesType + ' target saved');
   renderSalesTab();
-}
-async function deleteTargetLine(lineId){
-  const target = getTarget(state.month);
-  if (!target) return;
-  target.lines = (target.lines||[]).filter(l=>l.id!==lineId);
-  await saveKey(KEYS.TARGET, state.targets);
-  flash('Target line removed');
-  renderSalesTab();
-}
-
-function renderTargetLineForm(){
-  const d = targetLineDraft;
-  const revenue = (Number(d.volumeCBM)||0) * (Number(d.rate)||0);
-  return `
-  <div class="subcard" style="border-color:var(--amber);margin-bottom:12px;">
-    <div class="subtitle">${d.id ? 'Edit target line' : 'Add target line'}</div>
-    <div class="grid">
-      <label><span class="lbl">Mass ID</span><input list="massIdList" value="${esc(d.massId)}" onchange="targetLineDraft.massId=this.value" placeholder="e.g. E 9"></label>
-      <label><span class="lbl">Volume (CBM)</span><input type="number" step="any" value="${esc(d.volumeCBM)}" oninput="targetLineDraft.volumeCBM=this.value; updateTargetLineRevenuePreview();"></label>
-      <label><span class="lbl">Rate (₹/CBM) — defaults to Local, override for Export</span><input type="number" step="any" value="${esc(d.rate)}" oninput="targetLineDraft.rate=this.value; updateTargetLineRevenuePreview();"></label>
-      <label><span class="lbl">Revenue (auto)</span><input id="targetLineRevenuePreview" value="${fmtINR(revenue)}" disabled style="background:#f5f5f4;font-family:ui-monospace,monospace;"></label>
-    </div>
-    <button class="btn amber" onclick="submitTargetLine()">${d.id ? 'Save changes' : 'Add line'}</button>
-    <button class="btn ghost" onclick="closeTargetLineForm()">Cancel</button>
-  </div>`;
-}
-
-function computeUnplannedSales(monthSales, lines){
-  const targetedMassIds = new Set(lines.map(l=>l.massId));
-  const groups = {};
-  monthSales.filter(s=>!targetedMassIds.has(s.massId)).forEach(s=>{
-    const key = s.massId || '(no Mass ID)';
-    if (!groups[key]) groups[key] = { massId: key, vol:0, rev:0 };
-    groups[key].vol += Number(s.volumeCBM)||0;
-    groups[key].rev += Number(s.saleValue)||0;
-  });
-  return Object.values(groups);
 }
 
 function renderTargetCard(monthSales){
-  const lines = targetLinesOf(state.month);
-  const targetVol = lines.reduce((a,l)=>a+(Number(l.volumeCBM)||0),0);
-  const targetRev = lines.reduce((a,l)=>a+(Number(l.volumeCBM)||0)*(Number(l.rate)||0),0);
-  const achievedVol = monthSales.reduce((a,s)=>a+(Number(s.volumeCBM)||0),0);
-  const achievedRev = monthSales.reduce((a,s)=>a+(Number(s.saleValue)||0),0);
-  const balVol = Math.max(targetVol - achievedVol, 0);
-  const balRev = Math.max(targetRev - achievedRev, 0);
+  const exportTarget = getTargetRow(state.month, 'Export') || { volumeCBM:'', rate:'' };
+  const localTarget = getTargetRow(state.month, 'Local') || { volumeCBM:'', rate:'' };
+
+  const achievedFor = (type) => {
+    const rows = monthSales.filter(s => (s.salesType||'Local') === type);
+    return {
+      vol: rows.reduce((a,s)=>a+(Number(s.volumeCBM)||0),0),
+      rev: rows.reduce((a,s)=>a+(Number(s.saleValue)||0),0)
+    };
+  };
+  const exportAch = achievedFor('Export');
+  const localAch = achievedFor('Local');
+
+  const rowHtml = (type, target, achieved, colorClass) => {
+    const targetVol = Number(target.volumeCBM)||0;
+    const targetRate = Number(target.rate)||0;
+    const targetRev = targetVol * targetRate;
+    const balVol = Math.max(targetVol - achieved.vol, 0);
+    const balRev = Math.max(targetRev - achieved.rev, 0);
+    return `
+    <div class="subcard" style="margin-bottom:12px;">
+      <div class="subtitle">${type}</div>
+      <div class="grid">
+        <label><span class="lbl">Target Volume (CBM)</span><input type="number" step="any" id="targetVol_${type}" value="${esc(target.volumeCBM)}" placeholder="0"></label>
+        <label><span class="lbl">Rate (₹/CBM)</span><input type="number" step="any" id="targetRate_${type}" value="${esc(target.rate)}" placeholder="0"></label>
+        <label><span class="lbl">Target Value (auto)</span><input value="${fmtINR(targetRev)}" disabled style="background:#f5f5f4;font-family:ui-monospace,monospace;"></label>
+        <label style="align-self:end;"><button class="btn ${colorClass}" onclick="saveTargetRow('${type}', document.getElementById('targetVol_${type}').value, document.getElementById('targetRate_${type}').value)">Save ${type} Target</button></label>
+      </div>
+      <div class="stat-row" style="margin-top:10px;">
+        <div class="stat teal"><div class="lbl">Target Vol</div><div class="val">${targetVol.toLocaleString('en-IN')} CBM</div></div>
+        <div class="stat amber"><div class="lbl">Achieved Vol</div><div class="val">${achieved.vol.toLocaleString('en-IN')} CBM</div></div>
+        <div class="stat ${balVol>0?'red':'emerald'}"><div class="lbl">Balance Vol</div><div class="val">${balVol.toLocaleString('en-IN')} CBM</div></div>
+        <div class="stat teal"><div class="lbl">Target Value</div><div class="val">${fmtINRCr(targetRev)}</div></div>
+        <div class="stat amber"><div class="lbl">Achieved Value</div><div class="val">${fmtINRCr(achieved.rev)}</div></div>
+        <div class="stat ${balRev>0?'red':'emerald'}"><div class="lbl">Balance Value</div><div class="val">${fmtINRCr(balRev)}</div></div>
+      </div>
+    </div>`;
+  };
+
+  const totalTargetVol = (Number(exportTarget.volumeCBM)||0) + (Number(localTarget.volumeCBM)||0);
+  const totalTargetRev = ((Number(exportTarget.volumeCBM)||0)*(Number(exportTarget.rate)||0)) + ((Number(localTarget.volumeCBM)||0)*(Number(localTarget.rate)||0));
+  const totalAchVol = exportAch.vol + localAch.vol;
+  const totalAchRev = exportAch.rev + localAch.rev;
 
   let html = `
   <div class="card">
-    <p class="section-title">Sales Target — Mass-wise</p>
+    <p class="section-title">Sales Target — ${esc(state.month)}</p>
     <div class="stat-row" style="margin-bottom:12px;">
-      <div class="stat teal"><div class="lbl">Target Volume</div><div class="val">${targetVol.toLocaleString('en-IN')} CBM</div></div>
-      <div class="stat amber"><div class="lbl">Achieved Volume</div><div class="val">${achievedVol.toLocaleString('en-IN')} CBM</div></div>
-      <div class="stat ${balVol>0?'red':'emerald'}"><div class="lbl">Balance Volume</div><div class="val">${balVol.toLocaleString('en-IN')} CBM</div></div>
-      <div class="stat stone"><div class="lbl">&nbsp;</div><div class="val">&nbsp;</div></div>
-      <div class="stat teal"><div class="lbl">Target Revenue</div><div class="val">${fmtINRCr(targetRev)}</div></div>
-      <div class="stat amber"><div class="lbl">Achieved Revenue</div><div class="val">${fmtINRCr(achievedRev)}</div></div>
-      <div class="stat ${balRev>0?'red':'emerald'}"><div class="lbl">Balance Revenue</div><div class="val">${fmtINRCr(balRev)}</div></div>
-      <div class="stat stone"><div class="lbl">&nbsp;</div><div class="val">&nbsp;</div></div>
-    </div>`;
-
-  if (targetLineDraft){
-    html += renderTargetLineForm();
-  } else {
-    html += `<button class="btn amber" onclick="openTargetLineForm(null)" style="margin-bottom:12px;">+ Add target line</button>`;
-  }
-
-  html += `<div class="table-wrap"><table><thead><tr>
-    <th>Mass ID</th><th style="text-align:right;">Target Vol</th><th style="text-align:right;">Rate</th><th style="text-align:right;">Target Rev</th>
-    <th style="text-align:right;">Sold Vol</th><th style="text-align:right;">Sold Rev</th><th style="text-align:right;">Vol Balance</th><th style="text-align:right;">Rev Balance</th><th></th>
-    </tr></thead><tbody>`;
-  const unplanned = computeUnplannedSales(monthSales, lines);
-  if (lines.length===0 && unplanned.length===0){
-    html += `<tr><td colspan="9" class="empty">No masses targeted for sales yet this month.</td></tr>`;
-  } else {
-    lines.forEach(l=>{
-      const targetRevLine = (Number(l.volumeCBM)||0)*(Number(l.rate)||0);
-      const matchedSales = monthSales.filter(s=>s.massId===l.massId);
-      const sold = matchedSales.reduce((a,s)=>a+(Number(s.volumeCBM)||0),0);
-      const soldRev = matchedSales.reduce((a,s)=>a+(Number(s.saleValue)||0),0);
-      const bal = (Number(l.volumeCBM)||0) - sold;
-      const revBal = targetRevLine - soldRev;
-      html += `<tr>
-        <td style="font-family:ui-monospace,monospace;">${esc(l.massId)}</td>
-        <td class="num">${l.volumeCBM}</td>
-        <td class="num">₹${Number(l.rate).toLocaleString('en-IN')}</td>
-        <td class="num">${fmtINRCr(targetRevLine)}</td>
-        <td class="num">${sold.toLocaleString('en-IN')}</td>
-        <td class="num" style="color:var(--emerald);">${fmtINRCr(soldRev)}</td>
-        <td class="num" style="color:${bal>0?'var(--red)':'var(--emerald)'};">${bal.toLocaleString('en-IN')}</td>
-        <td class="num" style="color:${revBal>0?'var(--red)':'var(--emerald)'};">${fmtINRCr(revBal)}</td>
-        <td><div class="actions">
-          <button class="icon-btn" onclick="openTargetLineForm('${l.id}')" title="Edit">✏️</button>
-          ${state.role==='Admin' ? `<button class="icon-btn danger" onclick="deleteTargetLine('${l.id}')" title="Delete">🗑️</button>` : ''}
-        </div></td>
-      </tr>`;
-    });
-    if (lines.length>0){
-      const sumTargetVol = lines.reduce((a,l)=>a+(Number(l.volumeCBM)||0),0);
-      const sumTargetRev = lines.reduce((a,l)=>a+(Number(l.volumeCBM)||0)*(Number(l.rate)||0),0);
-      const sumSoldVol = lines.reduce((a,l)=>a+monthSales.filter(s=>s.massId===l.massId).reduce((x,s)=>x+(Number(s.volumeCBM)||0),0),0);
-      const sumSoldRev = lines.reduce((a,l)=>a+monthSales.filter(s=>s.massId===l.massId).reduce((x,s)=>x+(Number(s.saleValue)||0),0),0);
-      const sumVolBal = sumTargetVol - sumSoldVol;
-      const sumRevBal = sumTargetRev - sumSoldRev;
-      html += `<tr style="background:var(--stone-bg);font-weight:700;border-top:2px solid var(--stone-border);">
-        <td colspan="1">TOTAL</td>
-        <td class="num">${sumTargetVol.toLocaleString('en-IN')}</td>
-        <td></td>
-        <td class="num">${fmtINRCr(sumTargetRev)}</td>
-        <td class="num">${sumSoldVol.toLocaleString('en-IN')}</td>
-        <td class="num" style="color:var(--emerald);">${fmtINRCr(sumSoldRev)}</td>
-        <td class="num" style="color:${sumVolBal>0?'var(--red)':'var(--emerald)'};">${sumVolBal.toLocaleString('en-IN')}</td>
-        <td class="num" style="color:${sumRevBal>0?'var(--red)':'var(--emerald)'};">${fmtINRCr(sumRevBal)}</td>
-        <td></td>
-      </tr>`;
-    }
-    unplanned.forEach(u=>{
-      html += `<tr style="background:#fffbeb;">
-        <td style="font-family:ui-monospace,monospace;">${esc(u.massId)} <span class="badge amber" style="margin-left:4px;">Unplanned</span></td>
-        <td class="num" style="color:#a8a29e;">—</td>
-        <td class="num" style="color:#a8a29e;">—</td>
-        <td class="num" style="color:#a8a29e;">—</td>
-        <td class="num">${u.vol.toLocaleString('en-IN')}</td>
-        <td class="num" style="color:var(--emerald);">${fmtINRCr(u.rev)}</td>
-        <td class="num" style="color:#a8a29e;">—</td>
-        <td class="num" style="color:#a8a29e;">—</td>
-        <td></td>
-      </tr>`;
-    });
-  }
-  html += `</tbody></table></div>`;
-  if (unplanned.length > 0){
-    html += `<p class="hint">"Unplanned" rows are sales for a Mass ID that has no target line set up — nothing here is ever silently uncounted; add a target line for that Mass ID if you want it tracked against a plan.</p>`;
-  }
-
-  html += `<button class="btn ghost" onclick="toggleProdMasses()" style="margin-top:12px;">${showProdMasses ? 'Hide' : '🏭 Show'} Targeted Masses (Production) — ${esc(state.month)}</button>
-    ${showProdMasses ? renderProdMassesPanel() : ''}
+      <div class="stat stone"><div class="lbl">Total Target Vol</div><div class="val">${totalTargetVol.toLocaleString('en-IN')} CBM</div></div>
+      <div class="stat stone"><div class="lbl">Total Achieved Vol</div><div class="val">${totalAchVol.toLocaleString('en-IN')} CBM</div></div>
+      <div class="stat stone"><div class="lbl">Total Target Value</div><div class="val">${fmtINRCr(totalTargetRev)}</div></div>
+      <div class="stat stone"><div class="lbl">Total Achieved Value</div><div class="val">${fmtINRCr(totalAchRev)}</div></div>
+    </div>
+    ${rowHtml('Export', exportTarget, exportAch, 'teal')}
+    ${rowHtml('Local', localTarget, localAch, 'amber')}
   </div>`;
   return html;
 }
@@ -1094,9 +985,10 @@ function renderFullCaptureBlock(){
   const periodColl = state.collections.filter(c=>c.date>=pb.from && c.date<=pb.to);
   const todayStr = today();
   const todaySales = state.sales.filter(s=>s.date===todayStr);
-  const targetLines = targetLinesOf(state.month);
-  const targetVol = targetLines.reduce((a,l)=>a+(Number(l.volumeCBM)||0),0);
-  const targetRev = targetLines.reduce((a,l)=>a+(Number(l.volumeCBM)||0)*(Number(l.rate)||0),0);
+  const targetExport = getTargetRow(state.month, 'Export') || { volumeCBM:0, rate:0 };
+  const targetLocal = getTargetRow(state.month, 'Local') || { volumeCBM:0, rate:0 };
+  const targetVol = (Number(targetExport.volumeCBM)||0) + (Number(targetLocal.volumeCBM)||0);
+  const targetRev = (Number(targetExport.volumeCBM)||0)*(Number(targetExport.rate)||0) + (Number(targetLocal.volumeCBM)||0)*(Number(targetLocal.rate)||0);
   const achievedVol = monthSales.reduce((a,s)=>a+(Number(s.volumeCBM)||0),0);
   const achievedRev = monthSales.reduce((a,s)=>a+(Number(s.saleValue)||0),0);
   const periodValue = periodSales.reduce((a,s)=>a+(Number(s.saleValue)||0),0);
@@ -1135,26 +1027,21 @@ function renderFullCaptureBlock(){
     ${dashKpi('Balance Revenue', fmtINRCr(Math.max(targetRev-achievedRev,0)), targetRev>achievedRev?RED:EMERALD)}
   </div>`;
 
-  const salesTargetLines = targetLinesOf(state.month);
-  const unplannedExport = computeUnplannedSales(monthSales, salesTargetLines);
-  inner += dashHeader('Sales Target vs Actually Sold — Mass-wise (Month Picker)', AMBER);
+  const achievedByType = { Export: {vol:0, rev:0}, Local: {vol:0, rev:0} };
+  monthSales.forEach(s=>{
+    const type = s.salesType==='Export' ? 'Export' : 'Local';
+    achievedByType[type].vol += Number(s.volumeCBM)||0;
+    achievedByType[type].rev += Number(s.saleValue)||0;
+  });
+  inner += dashHeader('Sales Target vs Actual — Export & Local (Month Picker)', AMBER);
   let tRows = '';
-  if (salesTargetLines.length===0 && unplannedExport.length===0){ tRows = `<tr><td colspan="7" style="text-align:center;color:#a8a29e;padding:10px;">No sales target lines set for this month.</td></tr>`; }
-  else {
-    salesTargetLines.forEach((l,i)=>{ const targetRevLine=(Number(l.volumeCBM)||0)*(Number(l.rate)||0); const matched=monthSales.filter(s=>s.massId===l.massId); const sold=matched.reduce((a,s)=>a+(Number(s.volumeCBM)||0),0); const soldRev=matched.reduce((a,s)=>a+(Number(s.saleValue)||0),0); const bal=(Number(l.volumeCBM)||0)-sold; const revBal=targetRevLine-soldRev; tRows += `<tr style="background:${i%2?'#fafaf9':'#fff'};"><td style="padding:7px 10px;font-weight:600;">${esc(l.massId)}</td><td style="padding:7px 10px;text-align:right;">${Number(l.volumeCBM).toLocaleString('en-IN')}</td><td style="padding:7px 10px;text-align:right;">${fmtINRCr(targetRevLine)}</td><td style="padding:7px 10px;text-align:right;">${sold.toLocaleString('en-IN')}</td><td style="padding:7px 10px;text-align:right;color:${EMERALD};">${fmtINRCr(soldRev)}</td><td style="padding:7px 10px;text-align:right;font-weight:600;color:${bal>0?RED:EMERALD};">${bal.toLocaleString('en-IN')}</td><td style="padding:7px 10px;text-align:right;font-weight:600;color:${revBal>0?RED:EMERALD};">${fmtINRCr(revBal)}</td></tr>`; });
-    if (salesTargetLines.length>0){
-      const sTV=salesTargetLines.reduce((a,l)=>a+(Number(l.volumeCBM)||0),0);
-      const sTR=salesTargetLines.reduce((a,l)=>a+(Number(l.volumeCBM)||0)*(Number(l.rate)||0),0);
-      const sSV=salesTargetLines.reduce((a,l)=>a+monthSales.filter(s=>s.massId===l.massId).reduce((x,s)=>x+(Number(s.volumeCBM)||0),0),0);
-      const sSR=salesTargetLines.reduce((a,l)=>a+monthSales.filter(s=>s.massId===l.massId).reduce((x,s)=>x+(Number(s.saleValue)||0),0),0);
-      const sVB=sTV-sSV, sRB=sTR-sSR;
-      tRows += `<tr style="background:#f5f5f4;font-weight:700;border-top:2px solid #d6d3d1;"><td style="padding:8px 10px;">TOTAL</td><td style="padding:8px 10px;text-align:right;">${sTV.toLocaleString('en-IN')}</td><td style="padding:8px 10px;text-align:right;">${fmtINRCr(sTR)}</td><td style="padding:8px 10px;text-align:right;">${sSV.toLocaleString('en-IN')}</td><td style="padding:8px 10px;text-align:right;color:${EMERALD};">${fmtINRCr(sSR)}</td><td style="padding:8px 10px;text-align:right;color:${sVB>0?RED:EMERALD};">${sVB.toLocaleString('en-IN')}</td><td style="padding:8px 10px;text-align:right;color:${sRB>0?RED:EMERALD};">${fmtINRCr(sRB)}</td></tr>`;
-    }
-    unplannedExport.forEach(u=>{
-      tRows += `<tr style="background:#fffbeb;"><td style="padding:7px 10px;font-weight:600;">${esc(u.massId)} <span style="background:#fef3c7;color:${AMBER};border-radius:999px;padding:1px 8px;font-size:10px;">Unplanned</span></td><td style="padding:7px 10px;text-align:right;color:#a8a29e;">—</td><td style="padding:7px 10px;text-align:right;color:#a8a29e;">—</td><td style="padding:7px 10px;text-align:right;">${u.vol.toLocaleString('en-IN')}</td><td style="padding:7px 10px;text-align:right;color:${EMERALD};">${fmtINRCr(u.rev)}</td><td style="padding:7px 10px;text-align:right;color:#a8a29e;">—</td><td style="padding:7px 10px;text-align:right;color:#a8a29e;">—</td></tr>`;
-    });
-  }
-  inner += dashTable([{label:'Mass ID'},{label:'Target Vol',right:1},{label:'Target Rev',right:1},{label:'Sold Vol',right:1},{label:'Sold Rev',right:1},{label:'Vol Bal',right:1},{label:'Rev Bal',right:1}], tRows, AMBER);
+  [['Export', targetExport],['Local', targetLocal]].forEach(([type, t], i)=>{
+    const tVol = Number(t.volumeCBM)||0, tRate = Number(t.rate)||0, tRev = tVol*tRate;
+    const aVol = achievedByType[type].vol, aRev = achievedByType[type].rev;
+    const volBal = tVol-aVol, revBal = tRev-aRev;
+    tRows += `<tr style="background:${i%2?'#fafaf9':'#fff'};"><td style="padding:7px 10px;font-weight:600;">${type}</td><td style="padding:7px 10px;text-align:right;">${tVol.toLocaleString('en-IN')}</td><td style="padding:7px 10px;text-align:right;">${fmtINRCr(tRev)}</td><td style="padding:7px 10px;text-align:right;">${aVol.toLocaleString('en-IN')}</td><td style="padding:7px 10px;text-align:right;color:${EMERALD};">${fmtINRCr(aRev)}</td><td style="padding:7px 10px;text-align:right;font-weight:600;color:${volBal>0?RED:EMERALD};">${volBal.toLocaleString('en-IN')}</td><td style="padding:7px 10px;text-align:right;font-weight:600;color:${revBal>0?RED:EMERALD};">${fmtINRCr(revBal)}</td></tr>`;
+  });
+  inner += dashTable([{label:'Type'},{label:'Target Vol',right:1},{label:'Target Value',right:1},{label:'Actual Vol',right:1},{label:'Actual Value',right:1},{label:'Vol Bal',right:1},{label:'Value Bal',right:1}], tRows, AMBER);
 
   inner += dashHeader(`Today's Sales — ${todayStr}`, TEAL);
   let todayRows = '';
@@ -1230,33 +1117,19 @@ function downloadExcel(){
       'Volume (CBM)': s.volumeCBM, 'Rate': s.rate, 'Sale Value': s.saleValue, 'Paid': paid, 'Due': due, 'Note': s.note||''
     };
   });
-  const salesTargetRows = targetLinesOf(state.month).map(l=>{
-    const targetRevLine = (Number(l.volumeCBM)||0)*(Number(l.rate)||0);
-    const matched = monthSales.filter(s=>s.massId===l.massId);
+  const salesTargetRows = ['Export','Local'].map(type=>{
+    const t = getTargetRow(state.month, type) || { volumeCBM:0, rate:0 };
+    const targetVol = Number(t.volumeCBM)||0, rate = Number(t.rate)||0;
+    const targetRev = targetVol*rate;
+    const matched = monthSales.filter(s=>(s.salesType==='Export'?'Export':'Local')===type);
     const sold = matched.reduce((a,s)=>a+(Number(s.volumeCBM)||0),0);
     const soldRev = matched.reduce((a,s)=>a+(Number(s.saleValue)||0),0);
     return {
-      'Mass ID': l.massId, 'Target Volume (CBM)': l.volumeCBM, 'Rate': l.rate,
-      'Target Revenue': targetRevLine,
-      'Sold Volume (CBM)': sold, 'Sold Revenue': soldRev,
-      'Volume Balance (CBM)': (Number(l.volumeCBM)||0) - sold, 'Revenue Balance': targetRevLine - soldRev
+      'Type': type, 'Target Volume (CBM)': targetVol, 'Rate': rate,
+      'Target Value': targetRev,
+      'Actual Volume (CBM)': sold, 'Actual Value': soldRev,
+      'Volume Balance (CBM)': targetVol - sold, 'Value Balance': targetRev - soldRev
     };
-  });
-  if (salesTargetRows.length > 0){
-    const sum = (key) => salesTargetRows.reduce((a,r)=>a+(Number(r[key])||0),0);
-    salesTargetRows.push({
-      'Mass ID': 'TOTAL', 'Target Volume (CBM)': sum('Target Volume (CBM)'), 'Rate': '',
-      'Target Revenue': sum('Target Revenue'),
-      'Sold Volume (CBM)': sum('Sold Volume (CBM)'), 'Sold Revenue': sum('Sold Revenue'),
-      'Volume Balance (CBM)': sum('Volume Balance (CBM)'), 'Revenue Balance': sum('Revenue Balance')
-    });
-  }
-  computeUnplannedSales(monthSales, targetLinesOf(state.month)).forEach(u=>{
-    salesTargetRows.push({
-      'Mass ID': `${u.massId} (Unplanned)`, 'Target Volume (CBM)': '', 'Rate': '',
-      'Target Revenue': '', 'Sold Volume (CBM)': u.vol, 'Sold Revenue': u.rev,
-      'Volume Balance (CBM)': '', 'Revenue Balance': ''
-    });
   });
 
   const wb = XLSX.utils.book_new();
@@ -1267,6 +1140,18 @@ function downloadExcel(){
 }
 
 function renderCustomerSummaryTab(){
+  // Customer + Mass ID breakdown (every sale, all time — this is the detail view)
+  const byCustomerMass = {};
+  state.sales.forEach(s=>{
+    const c = s.customer || '(no customer)';
+    const m = s.massId || '(no Mass ID)';
+    const key = c + '||' + m;
+    if (!byCustomerMass[key]) byCustomerMass[key] = { customer:c, massId:m, vol:0, salesValue:0 };
+    byCustomerMass[key].vol += Number(s.volumeCBM)||0;
+    byCustomerMass[key].salesValue += Number(s.saleValue)||0;
+  });
+  const detailRows = Object.values(byCustomerMass).sort((a,b)=> a.customer.localeCompare(b.customer) || a.massId.localeCompare(b.massId));
+
   const byCustomer = {};
   state.sales.forEach(s=>{
     const c = s.customer || '(no customer)';
@@ -1291,6 +1176,27 @@ function renderCustomerSummaryTab(){
       <div class="stat teal"><div class="lbl">Total Sales Value</div><div class="val">${fmtINRCr(totalSales)}</div></div>
       <div class="stat emerald"><div class="lbl">Total Collections</div><div class="val">${fmtINRCr(totalColl)}</div></div>
     </div>
+
+    <p class="section-title" style="margin-top:24px;">Customer × Mass ID — Volume &amp; Sales Value (All Time)</p>
+    <div class="table-wrap"><table><thead><tr>
+      <th>Customer</th><th>Mass ID</th><th style="text-align:right;">Volume (CBM)</th><th style="text-align:right;">Sales Value</th>
+    </tr></thead><tbody>`;
+  if (detailRows.length===0){
+    html += `<tr><td colspan="4" class="empty">No sales recorded yet.</td></tr>`;
+  } else {
+    detailRows.forEach(r=>{
+      html += `<tr>
+        <td>${esc(r.customer)}</td>
+        <td style="font-family:ui-monospace,monospace;">${esc(r.massId)}</td>
+        <td class="num">${r.vol.toLocaleString('en-IN')}</td>
+        <td class="num">${fmtINR(r.salesValue)}</td>
+      </tr>`;
+    });
+  }
+  html += `</tbody></table></div>`;
+
+  html += `
+    <p class="section-title" style="margin-top:24px;">Customer Totals</p>
     <div class="table-wrap"><table><thead><tr>
       <th>Customer Name</th><th style="text-align:right;">Total Volume (CBM)</th><th style="text-align:right;">Total Sales Value</th><th style="text-align:right;">Total Collections</th>
     </tr></thead><tbody>`;
@@ -1307,7 +1213,49 @@ function renderCustomerSummaryTab(){
     });
   }
   html += `</tbody></table></div>
-  <p class="hint">This customer table always reflects every month you've ever recorded — it ignores the month picker above.</p>`;
+  <p class="hint">These customer tables always reflect every month you've ever recorded — they ignore the month picker above.</p>`;
+
+  // Export vs Local — Target vs Actual, all-time rollup
+  const targetByType = { Export: {vol:0, val:0}, Local: {vol:0, val:0} };
+  state.targets.forEach(t=>{
+    if (targetByType[t.salesType]){
+      targetByType[t.salesType].vol += Number(t.volumeCBM)||0;
+      targetByType[t.salesType].val += (Number(t.volumeCBM)||0) * (Number(t.rate)||0);
+    }
+  });
+  const actualByType = { Export: {vol:0, val:0}, Local: {vol:0, val:0} };
+  state.sales.forEach(s=>{
+    const type = s.salesType==='Export' ? 'Export' : 'Local';
+    actualByType[type].vol += Number(s.volumeCBM)||0;
+    actualByType[type].val += Number(s.saleValue)||0;
+  });
+
+  html += `<p class="section-title" style="margin-top:24px;">Target vs Actual — Export &amp; Local (All Time)</p>
+    <div class="table-wrap"><table><thead><tr>
+      <th>Type</th><th style="text-align:right;">Target Vol</th><th style="text-align:right;">Actual Vol</th>
+      <th style="text-align:right;">Target Value</th><th style="text-align:right;">Actual Value</th>
+    </tr></thead><tbody>`;
+  ['Export','Local'].forEach(type=>{
+    html += `<tr>
+      <td>${type}</td>
+      <td class="num">${targetByType[type].vol.toLocaleString('en-IN')}</td>
+      <td class="num">${actualByType[type].vol.toLocaleString('en-IN')}</td>
+      <td class="num">${fmtINRCr(targetByType[type].val)}</td>
+      <td class="num" style="color:var(--emerald);">${fmtINRCr(actualByType[type].val)}</td>
+    </tr>`;
+  });
+  const totalTargetVol = targetByType.Export.vol + targetByType.Local.vol;
+  const totalActualVol = actualByType.Export.vol + actualByType.Local.vol;
+  const totalTargetVal = targetByType.Export.val + targetByType.Local.val;
+  const totalActualVal = actualByType.Export.val + actualByType.Local.val;
+  html += `<tr style="background:var(--stone-bg);font-weight:700;border-top:2px solid var(--stone-border);">
+      <td>TOTAL</td>
+      <td class="num">${totalTargetVol.toLocaleString('en-IN')}</td>
+      <td class="num">${totalActualVol.toLocaleString('en-IN')}</td>
+      <td class="num">${fmtINRCr(totalTargetVal)}</td>
+      <td class="num" style="color:var(--emerald);">${fmtINRCr(totalActualVal)}</td>
+    </tr>`;
+  html += `</tbody></table></div>`;
 
   const byMonth = {};
   state.sales.forEach(s=>{
@@ -1393,7 +1341,6 @@ function render(){
   ['sales','collection','summary'].forEach(t=>{
     document.getElementById('tabBtn-'+t).classList.toggle('active', state.tab===t);
   });
-  targetLineDraft = null;
   if (state.tab==='sales') renderSalesTab();
   else if (state.tab==='collection') renderCollectionTab();
   else renderCustomerSummaryTab();
