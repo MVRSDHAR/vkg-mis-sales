@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VKG Sales &amp; Collections MIS — Lite</title>
+<style>
+  :root {
+    --amber: #b45309; --amber-bg: #fef3c7;
+    --teal: #0f766e; --teal-bg: #ccfbf1;
+    --emerald: #047857; --emerald-bg: #d1fae5;
+    --stone: #44403c; --stone-bg: #f5f5f4; --stone-border:#e7e5e4;
+    --red: #dc2626; --red-bg:#fee2e2;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:var(--stone-bg); color:#1c1917; }
+  header { background:#1c1917; color:#fafaf9; padding:16px; }
+  header .row { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; max-width:900px; margin:0 auto; }
+  header h1 { font-size:18px; margin:0; }
+  header p { margin:2px 0 0; font-size:11px; letter-spacing:1px; text-transform:uppercase; color:#fbbf24; }
+  .role-select { display:flex; align-items:center; gap:6px; font-size:12px; color:#d6d3d1; }
+  select, input, textarea { font-family:inherit; font-size:14px; padding:8px; border-radius:8px; border:1px solid #d6d3d1; width:100%; background:white; }
+  .bar { background:white; border-bottom:1px solid var(--stone-border); position:sticky; top:0; z-index:5; }
+  .bar .row { max-width:900px; margin:0 auto; padding:0 16px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+  .tabs { display:flex; gap:2px; overflow-x:auto; }
+  .tab-btn { padding:12px 16px; background:none; border:none; border-bottom:3px solid transparent; font-size:14px; font-weight:600; color:#78716c; cursor:pointer; white-space:nowrap; }
+  .tab-btn.active.sales { border-color:var(--amber); color:var(--amber); }
+  .tab-btn.active.collection { border-color:var(--emerald); color:var(--emerald); }
+  .tab-btn.active.summary { border-color:var(--teal); color:var(--teal); }
+  main { max-width:900px; margin:0 auto; padding:16px; padding-bottom:60px; }
+  .card { background:white; border:1px solid var(--stone-border); border-radius:12px; padding:16px; margin-bottom:16px; box-shadow:0 1px 2px rgba(0,0,0,0.04); }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:0 16px; }
+  @media (max-width:600px){ .grid{ grid-template-columns:1fr; } }
+  label { display:block; margin-bottom:12px; }
+  label span.lbl { display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:#78716c; margin-bottom:4px; }
+  .pill-row { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+  .pill { padding:7px 14px; border-radius:999px; border:1px solid #d6d3d1; background:white; font-size:13px; font-weight:600; cursor:pointer; color:#57534e; }
+  .pill.active.amber { background:var(--amber); border-color:var(--amber); color:white; }
+  .btn { display:inline-flex; align-items:center; gap:6px; padding:10px 18px; border-radius:8px; border:none; font-size:14px; font-weight:600; cursor:pointer; color:white; }
+  .btn.amber { background:var(--amber); } .btn.amber:hover{ background:#92400e; }
+  .btn.emerald { background:var(--emerald); } .btn.emerald:hover{ background:#065f46; }
+  .btn.ghost { background:white; color:#57534e; border:1px solid #d6d3d1; }
+  .stat-row { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-bottom:16px; }
+  @media(min-width:600px){ .stat-row{ grid-template-columns:repeat(4,1fr); } }
+  .stat { background:white; border:1px solid var(--stone-border); border-radius:10px; padding:12px; border-top:4px solid var(--stone); }
+  .stat.amber{ border-top-color:var(--amber); } .stat.teal{ border-top-color:var(--teal); } .stat.emerald{ border-top-color:var(--emerald); } .stat.red{ border-top-color:var(--red); }
+  .stat .lbl { font-size:10px; text-transform:uppercase; color:#78716c; letter-spacing:0.5px; }
+  .stat .val { font-family:ui-monospace,monospace; font-weight:700; font-size:16px; margin-top:2px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; background:white; }
+  th { text-align:left; padding:8px; background:var(--stone-bg); font-size:10px; text-transform:uppercase; color:#78716c; letter-spacing:0.5px; }
+  td { padding:8px; border-top:1px solid var(--stone-border); }
+  td.num { text-align:right; font-family:ui-monospace,monospace; }
+  .table-wrap { overflow-x:auto; border:1px solid var(--stone-border); border-radius:12px; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; }
+  .badge.stone{ background:var(--stone-bg); color:#57534e; } .badge.amber{ background:var(--amber-bg); color:var(--amber); }
+  .badge.teal{ background:var(--teal-bg); color:var(--teal); } .badge.emerald{ background:var(--emerald-bg); color:var(--emerald); } .badge.red{ background:var(--red-bg); color:var(--red); }
+  .actions { display:flex; gap:8px; justify-content:flex-end; }
+  .icon-btn { background:none; border:none; cursor:pointer; font-size:15px; color:#a8a29e; padding:2px; }
+  .icon-btn:hover { color:#44403c; }
+  .icon-btn.danger:hover { color:var(--red); }
+  .empty { text-align:center; color:#a8a29e; padding:24px; }
+  .toast { position:fixed; bottom:16px; right:16px; background:#1c1917; color:white; padding:10px 16px; border-radius:8px; font-size:13px; z-index:50; }
+  .hint { font-size:12px; color:#a8a29e; margin-top:8px; }
+  .section-title { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:#57534e; margin:0 0 10px; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+
+<header>
+  <div class="row">
+    <div>
+      <h1>VKG Sales &amp; Collections MIS <span style="font-weight:400;font-size:13px;color:#a8a29e;">(Lite)</span></h1>
+      <p>Sales · Collection</p>
+    </div>
+    <div class="role-select" id="userBadge" style="display:none;">
+      <span id="userRoleLabel"></span>
+      <button type="button" onclick="doLogout()" style="margin-left:8px;background:none;border:1px solid #57534e;color:#d6d3d1;border-radius:6px;padding:3px 8px;font-size:11px;cursor:pointer;">Log out</button>
+    </div>
+  </div>
+</header>
+
+<div class="bar" id="tabBar" style="display:none;">
+  <div class="row">
+    <div class="tabs">
+      <button class="tab-btn sales" id="tabBtn-sales" onclick="setTab('sales')">Sales</button>
+      <button class="tab-btn collection" id="tabBtn-collection" onclick="setTab('collection')">Collections</button>
+      <button class="tab-btn summary" id="tabBtn-summary" onclick="setTab('summary')">Customer Summary</button>
+    </div>
+    <input type="month" id="monthPicker" onchange="setMonth(this.value)" style="width:auto;">
+  </div>
+</div>
+
+<div id="loginScreen" style="max-width:360px;margin:60px auto;padding:0 16px;">
+  <div class="card">
+    <div class="section-title">Sign in</div>
+    <label><span class="lbl">Email</span><input type="email" id="loginEmail" placeholder="you@vkg.internal"></label>
+    <label><span class="lbl">Password</span><input type="password" id="loginPassword"></label>
+    <div id="loginError" style="color:var(--red);font-size:13px;margin-bottom:10px;display:none;"></div>
+    <button class="btn amber" type="button" onclick="doLogin()" style="width:100%;justify-content:center;">Sign in</button>
+  </div>
+</div>
+
+<main id="app"></main>
+<div id="toast" style="display:none;" class="toast"></div>
+
+<datalist id="customerList"></datalist>
+<datalist id="massIdList"></datalist>
+
+
+<script>
+// ---------- storage helpers ----------
+const KEYS = { MASTER:'lite-sales-master', SALES:'lite-sales-sales', COLLECTION:'lite-sales-collection', TARGET:'lite-sales-target' };
+// ---- Supabase connection (same project as the Production app — different key names, no clash) ----
+const SUPABASE_URL = 'https://kfalpjblwfhlcqmxbwkc.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_LtkaUUlFOJ1DYCq4J1jXSA_63dmARUe';
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+async function loadKey(key, fallback){
+  try {
+    const { data, error } = await sb.from('app_storage').select('value').eq('key', key).maybeSingle();
+    if (error) throw error;
+    return data ? data.value : fallback;
+  } catch(e){ console.error('load failed', key, e); return fallback; }
+}
+async function saveKey(key, value){
+  try {
+    const { error } = await sb.from('app_storage').upsert({ key, value, updated_at: new Date().toISOString() });
+    if (error) throw error;
+    return true;
+  } catch(e){ console.error('save failed', key, e); return false; }
+}
+
+// ---------- state ----------
+// ================= AUTH =================
+let currentUser = null;
+let currentRole = null;
+
+async function doLogin(){
+  const email = document.getElementById('loginEmail').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  const errBox = document.getElementById('loginError');
+  errBox.style.display = 'none';
+  if (!email || !password){ errBox.textContent = 'Enter email and password.'; errBox.style.display='block'; return; }
+  const { data, error } = await sb.auth.signInWithPassword({ email, password });
+  if (error){ errBox.textContent = 'Sign in failed — check your email and password.'; errBox.style.display='block'; return; }
+  await afterLogin(data.user);
+}
+
+async function doLogout(){
+  await sb.auth.signOut();
+  currentUser = null; currentRole = null;
+  document.getElementById('loginScreen').style.display = 'block';
+  document.getElementById('userBadge').style.display = 'none';
+  document.getElementById('tabBar').style.display = 'none';
+  document.getElementById('app').innerHTML = '';
+}
+
+async function afterLogin(user){
+  currentUser = user;
+  const { data: roleRow } = await sb.from('app_user_roles').select('role').eq('user_id', user.id).maybeSingle();
+  currentRole = roleRow ? roleRow.role : 'viewer';
+  state.role = (currentRole === 'viewer') ? 'Staff' : 'Admin';
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('userBadge').style.display = 'flex';
+  document.getElementById('userRoleLabel').textContent = currentRole.toUpperCase() + ' (' + user.email + ')';
+  document.getElementById('tabBar').style.display = 'block';
+  await init();
+}
+
+async function checkExistingSession(){
+  const { data } = await sb.auth.getSession();
+  if (data && data.session && data.session.user){
+    await afterLogin(data.session.user);
+  }
+}
+checkExistingSession();
+
+let state = {
+  role: 'Staff',
+  tab: 'sales',
+  month: new Date().toISOString().slice(0,7),
+  master: { customers: [], massIds: [] },
+  sales: [],
+  collections: [],
+  targets: [], // [{month, targetVolume, targetRevenue}]
+  productionMassTargets: [], // read-only view into the Production app's Mass Targets — same Supabase project, different key
+  loading: true,
+};
+const PRODUCTION_MASSTARGETS_KEY = 'lite-prod-masstargets-v1';
+let showProdMasses = false;
+
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
+const today = () => new Date().toISOString().slice(0,10);
+const monthOf = d => (d||'').slice(0,7);
+const fmtINR = n => '\u20B9' + Number(n||0).toLocaleString('en-IN', {maximumFractionDigits:2});
+// Indian-style compact format for larger rupee figures — Crore/Lakh, never "Millions".
+function fmtINRCr(n){
+  n = Number(n)||0;
+  const abs = Math.abs(n);
+  if (abs >= 10000000) return '\u20B9' + (n/10000000).toLocaleString('en-IN',{maximumFractionDigits:2}) + ' Cr';
+  if (abs >= 100000) return '\u20B9' + (n/100000).toLocaleString('en-IN',{maximumFractionDigits:2}) + ' L';
+  return fmtINR(n);
+}
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const LOCAL_RATE = 24000;
+
+// Collections is the single source of truth for money received. A sale's "paid" total
+// is always computed from linked Collection entries, never stored on the sale itself.
+const paidOf = (sale) => state.collections.filter(c=>c.linkedSaleId===sale.id).reduce((s,c)=>s+(Number(c.amount)||0),0);
+const dueOf = (sale) => (Number(sale.saleValue)||0) - paidOf(sale);
+
+function flash(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.style.display='block';
+  setTimeout(()=>{ t.style.display='none'; }, 2000);
+}
+
+async function init(){
+  state.master = await loadKey(KEYS.MASTER, { customers: [], massIds: [] });
+  state.sales = await loadKey(KEYS.SALES, []);
+  state.collections = await loadKey(KEYS.COLLECTION, []);
+  state.targets = await loadKey(KEYS.TARGET, []);
+  state.productionMassTargets = await loadKey(PRODUCTION_MASSTARGETS_KEY, []);
+  state.loading = false;
+  document.getElementById('monthPicker').value = state.month;
+  render();
+}
+// init() now only runs after a successful login — see afterLogin() above
+
+async function refreshProdMasses(){
+  state.productionMassTargets = await loadKey(PRODUCTION_MASSTARGETS_KEY, []);
+  showProdMasses = true;
+  render();
+}
+function toggleProdMasses(){
+  if (showProdMasses){ showProdMasses = false; render(); }
+  else { refreshProdMasses(); }
+}
+
+function setRole(r){ state.role = r; state.editingId = null; render(); }
+function setTab(t){ state.tab = t; render(); }
+function setMonth(m){ state.month = m; render(); }
+
+// ---- Flexible report period: either "this month" or a custom date range — used by
+// Sales and Collections tables/downloads, independently of the global month picker above.
+function lastDayOfMonth(m){
+  const [y, mo] = m.split('-').map(Number);
+  return new Date(y, mo, 0).getDate();
+}
+function monthBounds(m){
+  return { from: m + '-01', to: `${m}-${String(lastDayOfMonth(m)).padStart(2,'0')}` };
+}
+let salesPeriod = { mode:'month', month: state.month, from:'', to:'' };
+let collPeriod = { mode:'month', month: state.month, from:'', to:'' };
+function resolvePeriod(period){
+  if (period.mode==='range' && period.from){
+    return { from: period.from, to: period.to || period.from };
+  }
+  return monthBounds(period.month || state.month);
+}
+function setSalesPeriod(field, val){ salesPeriod = { ...salesPeriod, [field]: val }; renderSalesTab(); }
+function setCollPeriod(field, val){ collPeriod = { ...collPeriod, [field]: val }; renderCollectionTab(); }
+function renderPeriodPicker(period, setterName){
+  const b = resolvePeriod(period);
+  return `
+  <div class="subcard">
+    <div class="pill-row" style="margin-bottom:8px;">
+      <button class="pill ${period.mode==='month'?'active amber':''}" onclick="${setterName}('mode','month')">By Month</button>
+      <button class="pill ${period.mode==='range'?'active amber':''}" onclick="${setterName}('mode','range')">By Date Range</button>
+    </div>
+    ${period.mode==='month' ? `
+      <label style="margin-bottom:0;"><span class="lbl">Month</span><input type="month" value="${esc(period.month||state.month)}" onchange="${setterName}('month', this.value)"></label>
+    ` : `
+      <div class="grid" style="margin-bottom:0;">
+        <label><span class="lbl">From</span><input type="date" value="${esc(period.from)}" onchange="${setterName}('from', this.value)"></label>
+        <label style="margin-bottom:0;"><span class="lbl">To</span><input type="date" value="${esc(period.to)}" onchange="${setterName}('to', this.value)"></label>
+      </div>
+    `}
+    <p class="hint" style="margin-top:6px;">Showing ${esc(b.from)} to ${esc(b.to)}.</p>
+  </div>`;
+}
+
+async function addCustomer(name){
+  if (!name || state.master.customers.includes(name)) return;
+  state.master.customers = [...state.master.customers, name];
+  await saveKey(KEYS.MASTER, state.master);
+}
+async function addMassId(id){
+  if (!id || state.master.massIds.includes(id)) return;
+  state.master.massIds = [...state.master.massIds, id];
+  await saveKey(KEYS.MASTER, state.master);
+}
+function refreshDatalists(){
+  document.getElementById('customerList').innerHTML = state.master.customers.map(c=>`<option value="${esc(c)}">`).join('');
+  const prodMassIds = state.productionMassTargets.filter(t=>t.month===state.month).map(t=>t.massId);
+  const allMassIds = Array.from(new Set([...state.master.massIds, ...prodMassIds]));
+  document.getElementById('massIdList').innerHTML = allMassIds.map(m=>`<option value="${esc(m)}">`).join('');
+}
+
+// ================= TARGET (simple, per-month) =================
+let targetLineDraft = null; // { id, massId, volumeCBM, rate } while adding/editing a line
+function getTarget(month){ return state.targets.find(t=>t.month===month); }
+function targetLinesOf(month){ const t = getTarget(month); return (t && t.lines) || []; }
+
+function blankTargetLine(){ return { id:null, massId:'', volumeCBM:'', rate:LOCAL_RATE }; }
+function openTargetLineForm(lineId){
+  if (lineId){
+    const line = targetLinesOf(state.month).find(l=>l.id===lineId);
+    targetLineDraft = line ? { ...line } : blankTargetLine();
+  } else {
+    targetLineDraft = blankTargetLine();
+  }
+  renderSalesTab();
+}
+function closeTargetLineForm(){ targetLineDraft = null; renderSalesTab(); }
+function updateTargetLineRevenuePreview(){
+  const el = document.getElementById('targetLineRevenuePreview');
+  if (el) el.value = fmtINR((Number(targetLineDraft.volumeCBM)||0) * (Number(targetLineDraft.rate)||0));
+}
+async function submitTargetLine(){
+  const d = targetLineDraft;
+  if (!d.massId || !d.volumeCBM){ alert('Please fill Mass ID and Volume.'); return; }
+  const rec = { id: d.id || uid(), massId: d.massId, volumeCBM: Number(d.volumeCBM), rate: Number(d.rate)||LOCAL_RATE };
+  let target = getTarget(state.month);
+  if (!target){ target = { id: uid(), month: state.month, lines: [] }; state.targets.push(target); }
+  if (d.id){ target.lines = target.lines.map(l=>l.id===d.id ? rec : l); }
+  else { target.lines = [...(target.lines||[]), rec]; }
+  await saveKey(KEYS.TARGET, state.targets);
+  await addMassId(d.massId);
+  targetLineDraft = null;
+  flash('Target line saved');
+  renderSalesTab();
+}
+async function deleteTargetLine(lineId){
+  const target = getTarget(state.month);
+  if (!target) return;
+  target.lines = (target.lines||[]).filter(l=>l.id!==lineId);
+  await saveKey(KEYS.TARGET, state.targets);
+  flash('Target line removed');
+  renderSalesTab();
+}
+
+function renderTargetLineForm(){
+  const d = targetLineDraft;
+  const revenue = (Number(d.volumeCBM)||0) * (Number(d.rate)||0);
+  return `
+  <div class="subcard" style="border-color:var(--amber);margin-bottom:12px;">
+    <div class="subtitle">${d.id ? 'Edit target line' : 'Add target line'}</div>
+    <div class="grid">
+      <label><span class="lbl">Mass ID</span><input list="massIdList" value="${esc(d.massId)}" onchange="targetLineDraft.massId=this.value" placeholder="e.g. E 9"></label>
+      <label><span class="lbl">Volume (CBM)</span><input type="number" step="any" value="${esc(d.volumeCBM)}" oninput="targetLineDraft.volumeCBM=this.value; updateTargetLineRevenuePreview();"></label>
+      <label><span class="lbl">Rate (₹/CBM) — defaults to Local, override for Export</span><input type="number" step="any" value="${esc(d.rate)}" oninput="targetLineDraft.rate=this.value; updateTargetLineRevenuePreview();"></label>
+      <label><span class="lbl">Revenue (auto)</span><input id="targetLineRevenuePreview" value="${fmtINR(revenue)}" disabled style="background:#f5f5f4;font-family:ui-monospace,monospace;"></label>
+    </div>
+    <button class="btn amber" onclick="submitTargetLine()">${d.id ? 'Save changes' : 'Add line'}</button>
+    <button class="btn ghost" onclick="closeTargetLineForm()">Cancel</button>
+  </div>`;
+}
+
+function computeUnplannedSales(monthSales, lines){
+  const targetedMassIds = new Set(lines.map(l=>l.massId));
+  const groups = {};
+  monthSales.filter(s=>!targetedMassIds.has(s.massId)).forEach(s=>{
+    const key = s.massId || '(no Mass ID)';
+    if (!groups[key]) groups[key] = { massId: key, vol:0, rev:0 };
+  
